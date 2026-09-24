@@ -9,7 +9,8 @@ Stages:
   2. normalize  convert every audio file to 16 kHz mono WAV via ffmpeg
   3. transcribe run Whisper large-v3-turbo (MLX) over each file
   4. refine     clean each transcript with a local Ollama SLM
-  5. docx       write one Word document per audio file
+  5. summarize  generate a title/description/topics as structured JSON
+  6. docx       write one Word document per audio file
 
 Each stage caches its result in output/transcripts.json, so re-running skips
 work that is already done. Use --force to redo everything.
@@ -40,8 +41,9 @@ from .docx_writer import human_duration, write_docx
 from .prompts import REFINE_PROMPT_TEMPLATE
 from .refine import ChatModel, OllamaChatModel, refine_transcript
 from .settings import PROJECT_ROOT, Settings
+from .summarize import TranscriptSummary, docx_filename, summarize_transcript
 
-STAGES = ("extract", "normalize", "transcribe", "refine", "docx")
+STAGES = ("extract", "normalize", "transcribe", "refine", "summarize", "docx")
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +284,47 @@ def stage_refine(state: dict, settings: Settings, force: bool, model: ChatModel 
 
 
 # ---------------------------------------------------------------------------
-# stage 5 - docx
+# stage 5 - summarize
+# ---------------------------------------------------------------------------
+
+def stage_summarize(state: dict, settings: Settings, force: bool, model: ChatModel | None = None) -> None:
+    model = model or OllamaChatModel(settings.llm_model)
+
+    pending = [
+        (k, v) for k, v in state["items"].items()
+        if v.get("raw_transcript") and (force or not v.get("summary"))
+    ]
+    if not pending:
+        log("summarize", "nothing to do (all cached)")
+        return
+
+    log("summarize", f"{len(pending)} file(s) with {settings.llm_model} ({settings.summary_language})")
+    for key, item in pending:
+        started = time.time()
+        try:
+            summary = summarize_transcript(
+                item["raw_transcript"],
+                item.get("refined_transcript") or item["raw_transcript"],
+                model,
+                language=settings.summary_language,
+                options=settings.llm_options,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the batch going
+            log("summarize", f"FAILED {key}: {exc}")
+            item["summarize_error"] = str(exc)
+            continue
+
+        item["summary"] = summary.model_dump()
+        item["summarize_seconds"] = round(time.time() - started, 2)
+        item.pop("summarize_error", None)
+        log("summarize", f"{key}: \"{summary.title}\" "
+                          f"(confidence={summary.confidence}, sensitivity={summary.sensitivity}) "
+                          f"in {item['summarize_seconds']:.1f}s")
+        save_state(state, settings)
+
+
+# ---------------------------------------------------------------------------
+# stage 6 - docx
 # ---------------------------------------------------------------------------
 
 def stage_docx(state: dict, settings: Settings) -> None:
@@ -293,7 +335,9 @@ def stage_docx(state: dict, settings: Settings) -> None:
         if not (item.get("refined_transcript") or item.get("raw_transcript")):
             continue
 
-        out = settings.docx_dir / f"{Path(key).stem}.docx"
+        summary = TranscriptSummary.model_validate(item["summary"]) if item.get("summary") else None
+        filename = docx_filename(key, summary, language=settings.summary_language)
+        out = settings.docx_dir / filename
         write_docx(key, item, out, settings)
         item["docx"] = str(out.relative_to(PROJECT_ROOT))
         written += 1
@@ -351,6 +395,10 @@ def main() -> None:
 
     if "refine" in stages:
         stage_refine(state, settings, args.force)
+        save_state(state, settings)
+
+    if "summarize" in stages:
+        stage_summarize(state, settings, args.force)
         save_state(state, settings)
 
     if "docx" in stages:

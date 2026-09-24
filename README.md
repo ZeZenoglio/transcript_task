@@ -2,13 +2,14 @@
 
 A small, local speech-to-text utility. Give it one audio recording, or a zip
 of many, and it produces a reviewed Word document per recording — corrected,
-punctuated, and traceable back to its source file. Everything runs on-device
-via [Ollama](https://ollama.com) and [MLX](https://github.com/ml-explore/mlx) —
-no audio or text leaves the machine.
+punctuated, titled, and traceable back to its source file. Everything runs
+on-device via [Ollama](https://ollama.com) and [MLX](https://github.com/ml-explore/mlx)
+— no audio or text leaves the machine.
 
 ```
 input (one file, or a zip of many)
-  → extract → normalize (ffmpeg) → transcribe (Whisper) → refine (Ollama) → .docx
+  → extract → normalize (ffmpeg) → transcribe (Whisper) → refine (Ollama)
+  → summarize (Ollama, structured JSON) → .docx
 ```
 
 > **Privacy note.** This pipeline was developed and benchmarked against a private
@@ -32,8 +33,8 @@ Results land in:
 
 | Path | Contents |
 |---|---|
-| `output/transcripts.json` | every transcript, raw + refined, with timings and segment timestamps |
-| `output/docx/` | one Word document per audio file |
+| `output/transcripts.json` | every transcript — raw, refined, and its structured summary — with timings and segment timestamps |
+| `output/docx/` | one Word document per audio file, named after its generated title |
 | `tmp/extracted/` | audio unpacked from the input |
 | `tmp/normalized/` | 16 kHz mono WAVs fed to the ASR model |
 
@@ -121,10 +122,38 @@ Because a small model editing text is inherently lossy, **every Word document em
 the unedited ASR output as an appendix**, so a reviewer can check any correction
 against what was actually heard.
 
+## Titles and summaries
+
+A final LLM pass reads *both* the raw and refined transcripts and returns a
+structured summary: a title, a 3–6 sentence description, 3–8 topic keywords, an
+estimated speaker count, the detected Portuguese variant, a `sensitivity` flag, and
+the model's own `confidence`. Giving it both transcript versions lets it use the
+raw text's disfluencies as evidence for speaker count and register, and flag where
+cleanup may have changed the meaning.
+
+The summary is returned as JSON constrained by Ollama's structured-output mode (a
+pydantic model's schema passed as `format=`), so malformed output is rare — but it's
+validated on arrival regardless, retried once with the validation error appended to
+the prompt if it fails, and replaced with a low-confidence stub (never a crash) if it
+fails twice. `sensitivity: medium/high` drives a warning banner at the top of the
+document; `confidence: low` adds a note asking the reviewer to double-check the title
+and description by hand.
+
+Output language is a config option (`summary_language: "pt" | "en"` in
+[settings.py](src/transcript_task/settings.py), or `TRANSCRIPT_SUMMARY_LANGUAGE`) —
+the title/description can either match the recording or be English for easier
+scanning. The transcript itself is **never** translated; this only picks which
+summary prompt variant runs.
+
 ## Tracing a document back to its audio
 
-Filenames are preserved end to end: `interview-2026-03-01.m4a` becomes
-`output/docx/interview-2026-03-01.docx`. Each document also carries a provenance
+Every document filename is the summary's title, slugified, with the original
+recording's filename appended: `interview-2026-03-01.m4a` becomes something like
+`output/docx/weekly-status-update__interview-2026-03-01.docx`. The original stem is
+always kept, so two recordings can never collide on their output name even if they
+summarize to the same title — traceability to the source audio never depends on the
+summary having worked. If summarization is skipped or fails, the filename falls back
+to just the original stem. Each document also carries a provenance
 header naming the source file, duration, original codec and sample rate, both model
 names, and the generation timestamp. The same key indexes
 `output/transcripts.json`.
@@ -132,19 +161,20 @@ names, and the generation timestamp. The same key indexes
 ## Usage
 
 ```bash
-uv run python main.py --input recordings.zip                       # run everything (resumes from cache)
-uv run python main.py --input recordings.zip --force               # ignore cache, redo all stages
-uv run python main.py --only transcribe refine                     # run a single stage (reuses the last input)
-uv run python main.py --input recordings.zip --only refine docx    # re-run cleanup and regenerate documents
-uv run python main.py --input recordings.zip --skip-refine         # raw ASR only, no LLM pass
+uv run python main.py --input recordings.zip                          # run everything (resumes from cache)
+uv run python main.py --input recordings.zip --force                  # ignore cache, redo all stages
+uv run python main.py --only transcribe refine                        # run a single stage (reuses the last input)
+uv run python main.py --input recordings.zip --only summarize docx    # regenerate titles + documents only
+uv run python main.py --input recordings.zip --skip-refine            # raw ASR only, no LLM pass
 ```
 
 `--input` accepts a zip archive of several recordings, or a single audio file. If
 omitted, the pipeline looks for exactly one `.zip` in the project root. Stages are
-`extract`, `normalize`, `transcribe`, `refine`, `docx`. Progress is checkpointed to
-`output/transcripts.json` after every file, so an interrupted run resumes where it
-stopped. To try a different SLM, change `llm_model` in [settings.py](src/transcript_task/settings.py)
-(or set `TRANSCRIPT_LLM_MODEL`) and run `--only refine docx --force`.
+`extract`, `normalize`, `transcribe`, `refine`, `summarize`, `docx`. Progress is
+checkpointed to `output/transcripts.json` after every file, so an interrupted run
+resumes where it stopped. To try a different SLM, change `llm_model` in
+[settings.py](src/transcript_task/settings.py) (or set `TRANSCRIPT_LLM_MODEL`) and
+run `--only refine summarize docx --force`.
 
 `main.py` is a thin entry point; `uv run python -m transcript_task.pipeline --input ...`
 does exactly the same thing.
@@ -158,15 +188,30 @@ src/transcript_task/
   audio.py         # ffprobe/ffmpeg wrappers (probe, normalize)
   asr.py           # speech-to-text behind a Transcriber protocol
   refine.py        # LLM cleanup behind a ChatModel protocol
+  summarize.py     # title/description generation, schema + slugify + filename logic
   docx_writer.py   # Word document generation
   pipeline.py      # stage orchestration + CLI
 main.py            # entry point
+tests/             # pytest suite — see the Testing section below
 ```
 
 `asr.py` and `refine.py` expose their model calls behind small `Protocol`
 interfaces rather than the pipeline calling `mlx_whisper`/`ollama` directly. That
 is what lets tests inject a fake model and lets the eval harness swap ASR/LLM
-models without touching `pipeline.py`.
+models without touching `pipeline.py`. `summarize.py` reuses the same `ChatModel`
+protocol as `refine.py`.
+
+## Testing
+
+```bash
+uv run pytest              # fast unit tests, no network or models required
+uv run pytest -m integration   # also exercises the real local Ollama model
+```
+
+Unit tests fake the LLM client (`tests/fakes.py`) so schema validation, the
+retry-then-fallback path, and filename generation all run in milliseconds with
+no model calls. The one `integration`-marked test calls a real local Ollama
+model and skips itself if Ollama isn't reachable.
 
 ## Audio handling
 

@@ -15,6 +15,7 @@ at the project root -- both are just pydantic-settings' defaults.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -70,6 +71,12 @@ class Settings(BaseSettings):
     @property
     def llm_options(self) -> dict:
         return {"temperature": self.llm_temperature, "num_ctx": self.llm_num_ctx}
+
+    # --- summarization -------------------------------------------------
+    # Language of the generated title/description/topics. The transcript
+    # itself is never translated -- this only picks which prompt variant
+    # (see prompts.py) the summarize stage uses.
+    summary_language: Literal["pt", "en"] = "pt"
 
     # --- audio -------------------------------------------------------------
     # Whisper expects 16 kHz mono. Anything not already in that shape gets

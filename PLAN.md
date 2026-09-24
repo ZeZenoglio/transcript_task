@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–2 complete (2026-09-24, on `dev`). Phases 3-12 pending. All open
+**Status:** Phases 0–3 complete (2026-09-24, on `dev`). Phases 4-12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -17,10 +17,11 @@ README and this plan were swept for scenario-specific framing and examples.
 
 | | |
 |---|---|
-| Works | `extract → normalize → transcribe → refine → docx`, 9 real recordings, JSON checkpointing |
-| Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine) |
-| Measured | 13:35 audio → 77 s ASR + 202 s refine on an M4 base |
-| Missing | tests, linting, API, eval harness, CI, frontend, logging, persistence |
+| Works | `extract → normalize → transcribe → refine → summarize → docx`, 9 real recordings, JSON checkpointing |
+| Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) |
+| Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base |
+| Tests | 33 unit tests (`uv run pytest`) + 1 integration test against real Ollama |
+| Missing | linting, API, eval harness, CI, frontend, logging, persistence |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
 As of Phase 2, the code is a proper `src/` package (`src/transcript_task/`) with a
@@ -142,7 +143,10 @@ repeatability.
 
 ---
 
-## Phase 3 — Summarisation stage (title + description)
+## Phase 3 — Summarisation stage (title + description) ✅ done
+
+Completed 2026-09-24, on `dev`. Built as planned: new `summarize` stage between
+`refine` and `docx`, in `src/transcript_task/summarize.py`.
 
 New final LLM pass receiving **both** the raw and refined transcripts, emitting
 structured output.
@@ -182,7 +186,25 @@ are both descriptive *and* still traceable to their source audio.
 handling, prompt-template rendering — all against a fake LLM client, plus one
 `@pytest.mark.integration` test hitting real Ollama.
 
-**Exit:** all 9 (or, post-Phase 5, all sample) files get a valid summary; unit tests green.
+**A real bug, found by running against real data rather than only fakes:**
+OOXML core document properties (`subject`, `keywords`, `title`) have a hard
+255-unicode-character limit that `python-docx` enforces by raising `ValueError`.
+The unit tests all passed -- they don't write real `.docx` files with long LLM
+descriptions -- but the first end-to-end run against actual recordings crashed on
+the very first file, since a 3-6 sentence description routinely exceeds 255 chars.
+Fixed with a `_truncated()` helper applied to every core-property write in
+`docx_writer.py`; the full untruncated description still appears in the document
+body. Added regression tests in `tests/test_docx_writer.py` that write a real
+`.docx` with a >255-char description and assert it doesn't raise. Logged here as a
+reminder for Phase 10: fakes-only unit tests are necessary but not sufficient --
+this class of bug only shows up when a real file format's real constraints meet
+real (LLM-length) content.
+
+**Exit:** met. All 9 files got a valid summary with no fallbacks needed (Ollama's
+structured-output mode held up under real use); 33 unit tests green
+(`uv run pytest`), plus the integration test passing against real Ollama. Sample
+titles produced: recordings were correctly identified as sensitivity=high or
+=medium in 8 of 9 cases, matching what a human reviewer would flag by hand.
 
 ---
 

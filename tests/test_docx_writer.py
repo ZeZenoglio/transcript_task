@@ -1,0 +1,110 @@
+"""Tests for write_docx, focused on the Phase 3 summary integration.
+
+Regression coverage for a real bug found while running Phase 3 against real
+recordings: OOXML core properties (subject/keywords/title) cap out at 255
+unicode characters, and an LLM-written 3-6 sentence description routinely
+exceeds that -- python-docx raises ValueError past the limit.
+"""
+
+from __future__ import annotations
+
+from docx import Document
+
+from transcript_task.docx_writer import _truncated, write_docx
+from transcript_task.settings import Settings
+
+LONG_DESCRIPTION = "Esta é uma descrição bastante longa. " * 10  # > 255 chars
+
+
+def _base_item(**overrides) -> dict:
+    item = {
+        "raw_transcript": "texto bruto",
+        "refined_transcript": "texto revisto",
+        "duration_seconds": 42.0,
+        "source_format": "aac",
+        "source_sample_rate": 48000,
+        "source_channels": 1,
+    }
+    item.update(overrides)
+    return item
+
+
+class TestTruncated:
+    def test_short_text_is_untouched(self):
+        assert _truncated("hello") == "hello"
+
+    def test_long_text_is_capped_at_255(self):
+        long_text = "x" * 500
+        result = _truncated(long_text)
+        assert len(result) <= 255
+
+    def test_boundary_is_not_off_by_one(self):
+        assert len(_truncated("x" * 255)) == 255
+        assert len(_truncated("x" * 256)) <= 255
+
+
+class TestWriteDocxWithSummary:
+    def test_long_description_does_not_raise(self, tmp_path):
+        assert len(LONG_DESCRIPTION) > 255
+        item = _base_item(summary={
+            "title": "Título de teste",
+            "description": LONG_DESCRIPTION,
+            "topics": ["a", "b", "c"],
+            "speakers_detected": 2,
+            "language_variant": "pt-PT",
+            "sensitivity": "low",
+            "confidence": "high",
+        })
+        out = tmp_path / "out.docx"
+
+        write_docx("recording.m4a", item, out, Settings())
+
+        assert out.exists()
+        doc = Document(str(out))
+        assert len(doc.core_properties.subject) <= 255
+        # the full, untruncated description must still be in the document body
+        assert LONG_DESCRIPTION.strip() in "\n".join(p.text for p in doc.paragraphs)
+
+    def test_sensitivity_banner_present_for_high_sensitivity(self, tmp_path):
+        item = _base_item(summary={
+            "title": "Assunto sensível",
+            "description": "Descrição curta.",
+            "topics": ["privado"],
+            "speakers_detected": 1,
+            "language_variant": "pt-PT",
+            "sensitivity": "high",
+            "confidence": "high",
+        })
+        out = tmp_path / "out.docx"
+        write_docx("recording.m4a", item, out, Settings())
+        text = "\n".join(p.text for p in Document(str(out)).paragraphs)
+        assert "sensível" in text.lower() or "⚠" in text
+
+    def test_no_banner_for_low_sensitivity(self, tmp_path):
+        item = _base_item(summary={
+            "title": "Assunto normal",
+            "description": "Descrição curta.",
+            "topics": ["rotina"],
+            "speakers_detected": 1,
+            "language_variant": "pt-PT",
+            "sensitivity": "low",
+            "confidence": "high",
+        })
+        out = tmp_path / "out.docx"
+        write_docx("recording.m4a", item, out, Settings())
+        text = "\n".join(p.text for p in Document(str(out)).paragraphs)
+        assert "⚠" not in text
+
+
+class TestWriteDocxWithoutSummary:
+    def test_still_works_without_a_summary(self, tmp_path):
+        """Backward compatibility: items produced before Phase 3 (or where
+        summarize failed and was never retried) have no 'summary' key."""
+        item = _base_item()
+        out = tmp_path / "out.docx"
+
+        write_docx("recording.m4a", item, out, Settings())
+
+        assert out.exists()
+        doc = Document(str(out))
+        assert doc.core_properties.title == "Transcrição — recording.m4a"

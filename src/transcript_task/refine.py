@@ -14,12 +14,16 @@ from .prompts import PromptTemplate
 
 
 class ChatModel(Protocol):
-    def chat(self, *, system: str, user: str, options: dict) -> str:
+    def chat(self, *, system: str, user: str, options: dict, format: dict | None = None) -> str:
         """Send one turn to the model and return its text response.
 
+        `format`, when given, is a JSON Schema dict requesting Ollama's
+        structured-output (constrained decoding) mode -- used by the
+        summarize stage to get back parseable JSON instead of prose.
+
         Implementations are responsible for disabling any "thinking"/reasoning
-        mode -- it adds latency and nothing to a deterministic cleanup task,
-        as measured in this repo's README (a naive default-thinking call took
+        mode -- it adds latency and nothing to a deterministic task, as
+        measured in this repo's README (a naive default-thinking call took
         276s vs. 10s with it forced off, for an identical prompt).
         """
         ...
@@ -29,7 +33,7 @@ class OllamaChatModel:
     def __init__(self, model: str) -> None:
         self.model = model
 
-    def chat(self, *, system: str, user: str, options: dict) -> str:
+    def chat(self, *, system: str, user: str, options: dict, format: dict | None = None) -> str:
         import ollama
 
         response = ollama.chat(
@@ -39,6 +43,7 @@ class OllamaChatModel:
                 {"role": "user", "content": user},
             ],
             think=False,
+            format=format,
             options=options,
         )
         text = response["message"]["content"].strip()
