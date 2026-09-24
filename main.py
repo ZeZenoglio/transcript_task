@@ -1,6 +1,6 @@
-"""Entry point. The pipeline itself lives in pipeline.py."""
+"""Entry point. The pipeline itself lives in src/transcript_task/pipeline.py."""
 
-from pipeline import main
+from transcript_task.pipeline import main
 
 if __name__ == "__main__":
     main()

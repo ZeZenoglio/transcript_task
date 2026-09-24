@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–1 complete (2026-09-24, on `dev`). Phases 2-12 pending. All open
+**Status:** Phases 0–2 complete (2026-09-24, on `dev`). Phases 3-12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -20,12 +20,12 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → docx`, 9 real recordings, JSON checkpointing |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine on an M4 base |
-| Missing | tests, linting, packaging, API, eval harness, CI, frontend, logging, persistence |
-| Repo | **no commits, no remote**, branch `master`, `gh` not authenticated |
+| Missing | tests, linting, API, eval harness, CI, frontend, logging, persistence |
+| Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
-The code is currently three flat modules (`config.py`, `pipeline.py`, `main.py`) with
-module-level constants read directly by the stage functions. That is fine for a script
-and blocks almost everything downstream — hence Phase 2 before the API work.
+As of Phase 2, the code is a proper `src/` package (`src/transcript_task/`) with a
+pydantic `Settings` model passed explicitly into each stage, and the ASR/LLM calls
+behind `Protocol` interfaces. See Phase 2 below for what moved where.
 
 ---
 
@@ -90,35 +90,55 @@ inline.
 
 ---
 
-## Phase 2 — Restructure into a package 🔧 enabler
+## Phase 2 — Restructure into a package ✅ done
 
-Required before the API can read/modify config or the eval harness can import stages.
+Completed 2026-09-24, on `dev`. Built as planned; `summarize.py`, `db.py` and
+`logging_conf.py` are deliberately not created yet — they belong to Phases 3 and 7
+and would be empty stubs today.
 
 ```
 src/transcript_task/
   __init__.py
-  settings.py        # pydantic-settings; env-overridable; replaces config.py constants
-  prompts.py         # refine + summarise templates, versioned with an ID
-  audio.py           # probe / normalize  (from pipeline.py)
-  asr.py             # transcribe stage, behind a Protocol
-  refine.py          # LLM cleanup stage
-  summarize.py       # Phase 3
-  docx_writer.py     # document generation
-  pipeline.py        # orchestration only
-  db.py              # SQLite run log (Phase 7)
-  logging_conf.py    # structured logging (Phase 7)
-tests/
+  settings.py        # pydantic-settings model; env-overridable via TRANSCRIPT_* / .env
+  prompts.py         # PromptTemplate dataclass, versioned by id (refine-pt-v1 today)
+  audio.py           # ffprobe/ffmpeg wrappers: probe(), convert_to_target()
+  asr.py             # Transcriber protocol + MlxWhisperTranscriber
+  refine.py          # ChatModel protocol + OllamaChatModel + refine_transcript()
+  docx_writer.py     # write_docx() — the document-building logic, unchanged output
+  pipeline.py        # stage orchestration + CLI (unchanged interface, new internals)
 ```
 
-Key changes:
-- Constants → a `Settings` pydantic model, instantiated once and **passed in**, not
-  imported. This is what makes the config endpoints and per-run overrides possible.
-- ASR and LLM behind thin `Protocol` interfaces, so tests can inject fakes and the
-  eval harness can swap models without touching stage code.
-- `pipeline.py` keeps its CLI; `main.py` stays the entry point. **No behaviour change.**
+`config.py` and the root `pipeline.py` are deleted; `main.py` now imports
+`transcript_task.pipeline.main`. `--input` behaviour from the earlier generalisation
+pass carried over unchanged.
 
-**Exit:** `uv run python -m transcript_task.pipeline` reproduces the current run
-byte-for-byte on the same inputs; existing `output/transcripts.json` still loads.
+Key changes, as planned:
+- Constants → a `Settings` pydantic model, instantiated once in `main()` and
+  **passed into** every stage function, not imported as globals.
+- `asr.Transcriber` and `refine.ChatModel` are `Protocol`s; `stage_transcribe`/
+  `stage_refine` accept an optional instance of each, defaulting to the real
+  MLX/Ollama implementation. Phase 6's eval harness and Phase 10's tests both
+  depend on this — it's what makes a fake model injectable.
+- `pyproject.toml` gained a `hatchling` build backend and `[tool.hatch.build.targets.wheel]`
+  so `uv sync` installs the package in editable mode. `parakeet-mlx` was dropped from
+  dependencies — it was only ever used for the one-off benchmark documented in the
+  README, and nothing in the shipped pipeline imports it.
+
+**Exit:** met, with one honest caveat. `output/transcripts.json` from before the
+restructure loaded without changes, and a cached re-run (`--only docx`, everything
+else already done) reproduced the state file exactly, field for field. A full
+`--force` re-run reused identical arguments to `mlx_whisper.transcribe` and matched
+on 7 of 9 files exactly; the two longest recordings (247s and 248s) came back with
+minor wording differences. This traces to `mlx-whisper`/Metal itself, not the
+refactor — verified by calling the new `MlxWhisperTranscriber` twice in the same
+process on the same file (byte-identical), then noting the divergence only appears
+*across separate process runs* on long, hard-to-transcribe audio, consistent with
+Whisper's temperature-fallback decoding being sensitive to Metal's non-deterministic
+kernel scheduling on marginal/low-confidence stretches. **True byte-for-byte ASR
+reproduction across runs was never actually available before this refactor either**
+— this just made it visible. Worth keeping in mind for Phase 6: the eval harness
+should tolerate small per-run WER noise on long audio rather than expect exact
+repeatability.
 
 ---
 

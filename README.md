@@ -24,8 +24,8 @@ input (one file, or a zip of many)
 brew install ffmpeg          # if not already present
 uv sync
 ollama serve                 # if not already running
-uv run python pipeline.py --input recordings.zip     # a zip of several files
-uv run python pipeline.py --input interview.m4a       # or just one file
+uv run python main.py --input recordings.zip     # a zip of several files
+uv run python main.py --input interview.m4a       # or just one file
 ```
 
 Results land in:
@@ -99,7 +99,7 @@ recording the raw ASR produced a present-perfect with inverted clitic word order
 the 4B "corrected" it into a simple past, changing the meaning, while the 9B fixed
 only the word order and left the tense intact. For accuracy-sensitive material that
 distinction is worth the extra two minutes, so the 9B is the default. Switch
-`LLM_MODEL` in [config.py](config.py) to `qwen3.5:4b` if throughput matters more.
+`llm_model` in [settings.py](src/transcript_task/settings.py) to `qwen3.5:4b` if throughput matters more.
 
 Caveat on the metric: content recall counts *distinct* words, so it does not detect
 a dropped repetition. In one spot-check the 9B dropped a trailing repeated word that
@@ -113,7 +113,7 @@ hallucination, emitting the same four-word phrase 28 times at the end. The LLM
 collapsed it to a single instance. It also recovered a garbled proper noun to its
 correct spelling using surrounding context.
 
-The prompt in [config.py](config.py) forbids summarising, inventing content and
+The prompt in [prompts.py](src/transcript_task/prompts.py) forbids summarising, inventing content and
 translating, requires the speaker's register and Portuguese variant to be preserved,
 and instructs the model to mark uncertain passages with `[?]` for a human reviewer.
 
@@ -132,19 +132,41 @@ names, and the generation timestamp. The same key indexes
 ## Usage
 
 ```bash
-uv run python pipeline.py --input recordings.zip                       # run everything (resumes from cache)
-uv run python pipeline.py --input recordings.zip --force               # ignore cache, redo all stages
-uv run python pipeline.py --only transcribe refine                     # run a single stage (reuses the last input)
-uv run python pipeline.py --input recordings.zip --only refine docx    # re-run cleanup and regenerate documents
-uv run python pipeline.py --input recordings.zip --skip-refine         # raw ASR only, no LLM pass
+uv run python main.py --input recordings.zip                       # run everything (resumes from cache)
+uv run python main.py --input recordings.zip --force               # ignore cache, redo all stages
+uv run python main.py --only transcribe refine                     # run a single stage (reuses the last input)
+uv run python main.py --input recordings.zip --only refine docx    # re-run cleanup and regenerate documents
+uv run python main.py --input recordings.zip --skip-refine         # raw ASR only, no LLM pass
 ```
 
 `--input` accepts a zip archive of several recordings, or a single audio file. If
 omitted, the pipeline looks for exactly one `.zip` in the project root. Stages are
 `extract`, `normalize`, `transcribe`, `refine`, `docx`. Progress is checkpointed to
 `output/transcripts.json` after every file, so an interrupted run resumes where it
-stopped. To try a different SLM, change `LLM_MODEL` in [config.py](config.py) and
-run `--only refine docx --force`.
+stopped. To try a different SLM, change `llm_model` in [settings.py](src/transcript_task/settings.py)
+(or set `TRANSCRIPT_LLM_MODEL`) and run `--only refine docx --force`.
+
+`main.py` is a thin entry point; `uv run python -m transcript_task.pipeline --input ...`
+does exactly the same thing.
+
+## Project layout
+
+```
+src/transcript_task/
+  settings.py      # pydantic-settings model — every config value, env-overridable
+  prompts.py       # LLM prompt templates, versioned by id
+  audio.py         # ffprobe/ffmpeg wrappers (probe, normalize)
+  asr.py           # speech-to-text behind a Transcriber protocol
+  refine.py        # LLM cleanup behind a ChatModel protocol
+  docx_writer.py   # Word document generation
+  pipeline.py      # stage orchestration + CLI
+main.py            # entry point
+```
+
+`asr.py` and `refine.py` expose their model calls behind small `Protocol`
+interfaces rather than the pipeline calling `mlx_whisper`/`ollama` directly. That
+is what lets tests inject a fake model and lets the eval harness swap ASR/LLM
+models without touching `pipeline.py`.
 
 ## Audio handling
 
@@ -155,5 +177,5 @@ needed; files already in the target format are copied rather than re-encoded.
 macOS `__MACOSX/._*` resource-fork entries are skipped during zip extraction —
 they share the real files' extensions but contain no audio.
 
-Recognised extensions are listed in `AUDIO_EXTENSIONS` in [config.py](config.py);
+Recognised extensions are listed in `audio_extensions` in [settings.py](src/transcript_task/settings.py);
 add to that set if other formats show up.
