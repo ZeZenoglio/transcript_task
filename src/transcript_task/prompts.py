@@ -78,8 +78,23 @@ _SUMMARIZE_FIELDS_PT = """Produz um resumo estruturado com os seguintes campos:
   informação pessoal, financeira, médica, legal ou de outro modo sensível.
 - confidence: a tua confiança própria neste resumo ("low", "medium" ou "high")."""
 
-SUMMARIZE_PT_V1 = PromptTemplate(
-    id="summarize-pt-v1",
+# v2 (Phase 3b): added the PII-avoidance rule below. This filename/metadata
+# built from title/description/topics can travel more casually than the full
+# transcript (file properties, folder listings), so this is the primary --
+# not the only -- defense; anonymize.py's NER/regex pass is the deterministic
+# backstop for when a model ignores this instruction under real content
+# pressure. The instruction is scoped to these three fields only: it does
+# not, and must not, affect the transcript itself.
+_PII_RULE_PT = """IMPORTANTE -- privacidade: title, description e topics podem ser usados para
+nomear o ficheiro e aparecem nas propriedades do documento, que podem circular
+independentemente do documento completo. NÃO incluas nomes completos de pessoas privadas,
+números de telefone, moradas, ou números de identificação/contribuinte nestes três campos.
+Refere-te às pessoas pela função ou relação (ex.: "um interlocutor", "a cliente", "um familiar"),
+não pelo nome. Esta regra aplica-se apenas a title/description/topics -- não te preocupes com
+isto para os restantes campos, e nunca alteres a transcrição em si."""
+
+SUMMARIZE_PT_V2 = PromptTemplate(
+    id="summarize-pt-v2",
     system=(
         "És um assistente que resume transcrições de áudio. Respondes sempre "
         "apenas com um objeto JSON válido, sem comentários, sem markdown, "
@@ -90,6 +105,8 @@ a transcrição automática bruta (com possíveis erros de reconhecimento de fal
 versão revista por um segundo modelo (mais legível, mas ainda passível de erro).
 
 {_SUMMARIZE_FIELDS_PT}
+
+{_PII_RULE_PT}
 
 Usa a transcrição revista como base do conteúdo, mas usa a transcrição bruta como pista
 adicional sobre número de falantes, registo, e trechos onde a revisão possa ter alterado
@@ -119,8 +136,16 @@ _SUMMARIZE_FIELDS_EN = """Produce a structured summary with these fields:
   contains personal, financial, medical, legal, or otherwise private information.
 - confidence: your own confidence in this summary ("low", "medium", or "high")."""
 
-SUMMARIZE_EN_V1 = PromptTemplate(
-    id="summarize-en-v1",
+_PII_RULE_EN = """IMPORTANT -- privacy: title, description and topics may be used to name the
+file and appear in the document's properties, which can circulate independently of the full
+document. Do NOT include private individuals' full names, phone numbers, addresses, or
+ID/tax numbers in these three fields. Refer to people by role or relationship
+(e.g. "a caller", "the client", "a family member"), not by name. This rule applies only to
+title/description/topics -- don't worry about it for the other fields, and never alter the
+transcript itself."""
+
+SUMMARIZE_EN_V2 = PromptTemplate(
+    id="summarize-en-v2",
     system=(
         "You are an assistant that summarizes audio transcripts. You always "
         "respond with a single valid JSON object only, no commentary, no "
@@ -131,6 +156,8 @@ automatic transcript (may contain speech-recognition errors) and a cleaned-up ve
 produced by a second model (more readable, but still possibly imperfect).
 
 {_SUMMARIZE_FIELDS_EN}
+
+{_PII_RULE_EN}
 
 Use the cleaned-up transcript as the basis for content, but use the raw transcript as
 an extra clue about speaker count, register, and any place cleanup may have changed
@@ -150,8 +177,8 @@ CLEANED-UP TRANSCRIPT:
 )
 
 SUMMARIZE_PROMPT_TEMPLATES: dict[str, PromptTemplate] = {
-    "pt": SUMMARIZE_PT_V1,
-    "en": SUMMARIZE_EN_V1,
+    "pt": SUMMARIZE_PT_V2,
+    "en": SUMMARIZE_EN_V2,
 }
 
 

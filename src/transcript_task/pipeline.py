@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import shutil
 import sys
 import time
@@ -59,10 +60,25 @@ def require(binary: str) -> None:
         sys.exit(f"Required binary '{binary}' not found on PATH.")
 
 
+def new_transcript_id() -> str:
+    """A short, filesystem-friendly, effectively-collision-free id (2^32
+    space -- ample at this tool's personal scale). Deliberately not
+    time-sortable; a real `created_at` timestamp does that job once Phase 7's
+    SQLite table exists, so the id itself doesn't need to double as one."""
+    return secrets.token_hex(4)
+
+
 def load_state(settings: Settings) -> dict:
     if settings.transcripts_json.exists():
-        return json.loads(settings.transcripts_json.read_text(encoding="utf-8"))
-    return {"generated_at": None, "asr_model": None, "llm_model": None, "items": {}}
+        state = json.loads(settings.transcripts_json.read_text(encoding="utf-8"))
+    else:
+        state = {"generated_at": None, "asr_model": None, "llm_model": None, "items": {}}
+    # Migration: items from before transcript_id existed (or a legacy state
+    # file) get one assigned on load, so every downstream stage can rely on
+    # it being present unconditionally.
+    for item in state["items"].values():
+        item.setdefault("transcript_id", new_transcript_id())
+    return state
 
 
 def save_state(state: dict, settings: Settings) -> None:
@@ -163,6 +179,7 @@ def stage_normalize(files: list[Path], state: dict, settings: Settings, force: b
     for path in files:
         key = path.name
         item = state["items"].setdefault(key, {})
+        item.setdefault("transcript_id", new_transcript_id())
         wav = settings.normalized_dir / f"{path.stem}.wav"
 
         if wav.exists() and not force and item.get("normalized"):
@@ -336,7 +353,11 @@ def stage_docx(state: dict, settings: Settings) -> None:
             continue
 
         summary = TranscriptSummary.model_validate(item["summary"]) if item.get("summary") else None
-        filename = docx_filename(key, summary, language=settings.summary_language)
+        filename = docx_filename(
+            item["transcript_id"], summary,
+            language=settings.summary_language,
+            anonymize=settings.anonymize_metadata,
+        )
         out = settings.docx_dir / filename
         write_docx(key, item, out, settings)
         item["docx"] = str(out.relative_to(PROJECT_ROOT))

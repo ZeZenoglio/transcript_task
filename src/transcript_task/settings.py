@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     # (see prompts.py) the summarize stage uses.
     summary_language: Literal["pt", "en"] = "pt"
 
+    # Defense-in-depth PII safety net (see anonymize.py) applied to the
+    # filename slug and docx metadata (title/subject/keywords) built from the
+    # summary -- never to the transcript itself, and never to the visible
+    # "Resumo" section in the document body. On by default: it's a safety
+    # net, not a feature someone should have to opt into.
+    anonymize_metadata: bool = True
+
     # --- audio -------------------------------------------------------------
     # Whisper expects 16 kHz mono. Anything not already in that shape gets
     # converted by ffmpeg.

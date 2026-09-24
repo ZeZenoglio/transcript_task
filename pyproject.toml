@@ -7,8 +7,10 @@ requires-python = ">=3.13"
 dependencies = [
     "mlx-whisper>=0.4.3",
     "ollama>=0.6.2",
+    "pt-core-news-sm",
     "pydantic-settings>=2.6.0",
     "python-docx>=1.2.0",
+    "spacy>=3.8.16",
 ]
 
 [build-system]
@@ -31,3 +33,6 @@ markers = [
 # Default `pytest` run stays fast and offline; opt into integration explicitly
 # with `pytest -m integration` (see Phase 10 for the full test-tier layout).
 addopts = "-m 'not integration'"
+
+[tool.uv.sources]
+pt-core-news-sm = { url = "https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.8.0/pt_core_news_sm-3.8.0-py3-none-any.whl" }

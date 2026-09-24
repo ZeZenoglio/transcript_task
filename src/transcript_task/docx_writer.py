@@ -76,13 +76,34 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
     summary = item.get("summary")
     labels = _LABELS.get(settings.summary_language, _LABELS["pt"])
 
+    # Document *metadata* (core properties) is what can travel independently
+    # of anyone opening the file -- OS file-properties dialogs, search
+    # indexing, email/cloud-sync previews. The PII safety net in anonymize.py
+    # applies here, and only here: the visible "Resumo" heading/paragraph
+    # below uses the summary exactly as generated, unredacted, because by the
+    # time someone has the document open they're already looking at the full
+    # transcript with real names in it two paragraphs down -- redacting the
+    # abstract at that point would protect nothing and just read as broken.
+    meta_title, meta_description, meta_topics = None, None, []
+    if summary:
+        if settings.anonymize_metadata:
+            from .anonymize import redact_summary_fields
+            meta_title, meta_description, meta_topics = redact_summary_fields(
+                summary["title"], summary["description"], summary.get("topics", []),
+                language=settings.summary_language,
+            )
+        else:
+            meta_title = summary["title"]
+            meta_description = summary["description"]
+            meta_topics = summary.get("topics", [])
+
     doc = Document()
-    doc.core_properties.title = _truncated(summary["title"] if summary else f"Transcrição — {key}")
+    doc.core_properties.title = _truncated(meta_title if summary else f"Transcrição — {key}")
     doc.core_properties.comments = _truncated(f"Ficheiro de origem: {key}")
     if summary:
-        doc.core_properties.subject = _truncated(summary["description"])
-        if summary.get("topics"):
-            doc.core_properties.keywords = _truncated(", ".join(summary["topics"]))
+        doc.core_properties.subject = _truncated(meta_description)
+        if meta_topics:
+            doc.core_properties.keywords = _truncated(", ".join(meta_topics))
 
     doc.add_heading("Transcrição de Áudio", level=0)
 

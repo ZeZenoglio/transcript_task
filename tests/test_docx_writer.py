@@ -106,6 +106,52 @@ class TestWriteDocxWithSummary:
         assert "⚠" not in text
 
 
+class TestMetadataAnonymization:
+    """Phase 3b: the PII safety net must redact the docx *metadata*
+    (core properties) but never the visible body -- a title/description
+    with a name in it is exactly as informative to a reviewer who already
+    has the document open as one without, since the full transcript with
+    the real name is right there a few paragraphs down."""
+
+    def _item_with_name_in_summary(self, **summary_overrides) -> dict:
+        summary = {
+            "title": "Chamada com Marta sobre dinheiro",
+            "description": "Marta discute uma despesa recente com o interlocutor.",
+            "topics": ["Marta", "dinheiro"],
+            "speakers_detected": 2,
+            "language_variant": "pt-PT",
+            "sensitivity": "medium",
+            "confidence": "high",
+        }
+        summary.update(summary_overrides)
+        return _base_item(summary=summary)
+
+    def test_metadata_is_redacted_by_default(self, tmp_path):
+        item = self._item_with_name_in_summary()
+        out = tmp_path / "out.docx"
+        write_docx("recording.m4a", item, out, Settings())
+        doc = Document(str(out))
+        assert "marta" not in (doc.core_properties.title or "").lower()
+        assert "marta" not in (doc.core_properties.subject or "").lower()
+        assert "marta" not in (doc.core_properties.keywords or "").lower()
+
+    def test_visible_body_keeps_the_real_name(self, tmp_path):
+        """The point of the exercise: metadata is scrubbed, but the document
+        a reviewer actually opens is untouched."""
+        item = self._item_with_name_in_summary()
+        out = tmp_path / "out.docx"
+        write_docx("recording.m4a", item, out, Settings())
+        body_text = "\n".join(p.text for p in Document(str(out)).paragraphs)
+        assert "Marta" in body_text
+
+    def test_anonymize_metadata_false_keeps_the_real_name_in_metadata_too(self, tmp_path):
+        item = self._item_with_name_in_summary()
+        out = tmp_path / "out.docx"
+        write_docx("recording.m4a", item, out, Settings(anonymize_metadata=False))
+        doc = Document(str(out))
+        assert "marta" in (doc.core_properties.title or "").lower()
+
+
 class TestWriteDocxWithoutSummary:
     def test_still_works_without_a_summary(self, tmp_path):
         """Backward compatibility: items produced before Phase 3 (or where

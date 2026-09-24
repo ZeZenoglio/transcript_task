@@ -145,18 +145,51 @@ the title/description can either match the recording or be English for easier
 scanning. The transcript itself is **never** translated; this only picks which
 summary prompt variant runs.
 
+## Privacy: filenames and metadata never carry a name
+
+A title or description is LLM-authored text — it can end up in a filename, or in a
+document's File Properties, either of which can travel more casually than the full
+`.docx` (a folder listing, an OS search index, an email preview). Two layers guard
+against a name or other identifying detail leaking into that surface:
+
+1. **The summarize prompt is told not to.** Both the `pt` and `en` templates in
+   [prompts.py](src/transcript_task/prompts.py) explicitly instruct the model to
+   refer to people by role ("a caller", "the client") rather than by name in
+   `title`/`description`/`topics`, and never to touch this for any other field.
+2. **A deterministic backstop, because a prompt instruction is a soft control.**
+   [anonymize.py](src/transcript_task/anonymize.py) runs a small local Portuguese
+   NER model ([spaCy](https://spacy.io) `pt_core_news_sm`, ~12 MB, no GPU) plus regex
+   patterns for emails/phone numbers/ID numbers over the summary before it's used
+   for a filename or written into docx metadata, replacing anything it catches with
+   `[nome]`/`[contacto]`. It's tuned to over-redact rather than under-redact — a
+   real place name occasionally getting swept up costs nothing on a short title; a
+   real person's name slipping through is the failure this exists to prevent.
+   Toggle with `anonymize_metadata` in settings (on by default).
+
+**This never touches the transcript itself, or the visible summary in the document
+body.** By the time someone has the `.docx` open, the full transcript with real
+names is right there in the "Transcrição revista" section — redacting the abstract
+above it would protect nothing and just look broken. Redaction is scoped
+specifically to what leaves the document body: the filename and the OOXML core
+properties (title/subject/keywords).
+
 ## Tracing a document back to its audio
 
-Every document filename is the summary's title, slugified, with the original
-recording's filename appended: `interview-2026-03-01.m4a` becomes something like
-`output/docx/weekly-status-update__interview-2026-03-01.docx`. The original stem is
-always kept, so two recordings can never collide on their output name even if they
-summarize to the same title — traceability to the source audio never depends on the
-summary having worked. If summarization is skipped or fails, the filename falls back
-to just the original stem. Each document also carries a provenance
-header naming the source file, duration, original codec and sample rate, both model
-names, and the generation timestamp. The same key indexes
-`output/transcripts.json`.
+Every recording gets a stable, random `transcript_id` (an 8-character hex string)
+the first time it's processed, and that id never changes even if you rerun the
+pipeline with `--force`. The document filename is `<transcript_id>_<slug>.docx`,
+where the slug is the (anonymized) title: `interview-2026-03-01.m4a` might become
+`output/docx/a1b2c3d4_weekly-status-update.docx`. The id is what guarantees two
+recordings never collide, even if they summarize to the same title or a summary is
+missing entirely (in which case the filename is just `<transcript_id>.docx`).
+
+The original filename doesn't appear in the new name, but traceability doesn't
+depend on that: it's in the document's own provenance header (source file,
+duration, codec, sample rate, both model names, generation timestamp), and in the
+`output/transcripts.json` record indexed by the same `transcript_id`. This is
+deliberately the same id a future API (see [PLAN.md](PLAN.md), Phase 7) would use
+as a job id and a database primary key — one id names a file, a JSON record, and
+eventually a database row for the same recording.
 
 ## Usage
 
@@ -189,8 +222,9 @@ src/transcript_task/
   asr.py           # speech-to-text behind a Transcriber protocol
   refine.py        # LLM cleanup behind a ChatModel protocol
   summarize.py     # title/description generation, schema + slugify + filename logic
+  anonymize.py     # PII safety net (NER + regex) for filenames/docx metadata
   docx_writer.py   # Word document generation
-  pipeline.py      # stage orchestration + CLI
+  pipeline.py      # stage orchestration + CLI, transcript_id assignment
 main.py            # entry point
 tests/             # pytest suite — see the Testing section below
 ```
@@ -210,8 +244,10 @@ uv run pytest -m integration   # also exercises the real local Ollama model
 
 Unit tests fake the LLM client (`tests/fakes.py`) so schema validation, the
 retry-then-fallback path, and filename generation all run in milliseconds with
-no model calls. The one `integration`-marked test calls a real local Ollama
-model and skips itself if Ollama isn't reachable.
+no model calls. `anonymize.py`'s tests use the real (small, local) spaCy model
+rather than a fake, since its actual entity-recognition behaviour is the thing
+under test. The one `integration`-marked test calls a real local Ollama model
+and skips itself if Ollama isn't reachable.
 
 ## Audio handling
 

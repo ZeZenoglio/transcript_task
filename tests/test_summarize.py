@@ -156,8 +156,8 @@ class TestSummarizeTranscript:
 
 class TestPromptTemplates:
     def test_pt_and_en_templates_have_distinct_ids(self):
-        assert get_summarize_template("pt").id == "summarize-pt-v1"
-        assert get_summarize_template("en").id == "summarize-en-v1"
+        assert get_summarize_template("pt").id == "summarize-pt-v2"
+        assert get_summarize_template("en").id == "summarize-en-v2"
 
     def test_unknown_language_raises(self):
         with pytest.raises(ValueError):
@@ -196,24 +196,39 @@ class TestSlugify:
 
 
 class TestDocxFilename:
-    def test_uses_slug_and_keeps_original_stem(self):
+    def test_id_and_slug(self):
         summary = TranscriptSummary.model_validate(VALID_SUMMARY)
-        name = docx_filename("AUDIO-2026-01-01.m4a", summary)
-        assert name == "chamada-sobre-partilha-de-custos__AUDIO-2026-01-01.docx"
+        name = docx_filename("a1b2c3d4", summary)
+        assert name == "a1b2c3d4_chamada-sobre-partilha-de-custos.docx"
 
-    def test_no_summary_falls_back_to_stem_only(self):
-        assert docx_filename("interview.m4a", None) == "interview.docx"
+    def test_no_summary_falls_back_to_id_only(self):
+        assert docx_filename("a1b2c3d4", None) == "a1b2c3d4.docx"
 
-    def test_same_title_different_source_never_collides(self):
+    def test_same_title_different_id_never_collides(self):
         """Two recordings that happen to summarize to the same title must
         still produce distinct filenames -- traceability to source audio
-        can't depend on the summary being unique."""
+        can't depend on the summary being unique, only on the id."""
         summary = TranscriptSummary.model_validate(VALID_SUMMARY)
-        name_a = docx_filename("call-01.m4a", summary)
-        name_b = docx_filename("call-02.m4a", summary)
+        name_a = docx_filename("id-one", summary)
+        name_b = docx_filename("id-two", summary)
         assert name_a != name_b
-        assert name_a.endswith("call-01.docx")
-        assert name_b.endswith("call-02.docx")
+        assert name_a.startswith("id-one_")
+        assert name_b.startswith("id-two_")
+
+    def test_anonymizes_title_by_default(self):
+        summary = TranscriptSummary.model_validate({
+            **VALID_SUMMARY, "title": "Chamada com Marta sobre dinheiro",
+        })
+        name = docx_filename("a1b2c3d4", summary)
+        assert "marta" not in name.lower()
+        assert name.startswith("a1b2c3d4_")
+
+    def test_anonymize_false_keeps_the_real_name(self):
+        summary = TranscriptSummary.model_validate({
+            **VALID_SUMMARY, "title": "Chamada com Marta sobre dinheiro",
+        })
+        name = docx_filename("a1b2c3d4", summary, anonymize=False)
+        assert "marta" in name.lower()
 
 
 # ---------------------------------------------------------------------------

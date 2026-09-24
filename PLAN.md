@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–3 complete (2026-09-24, on `dev`). Phases 4-12 pending. All open
+**Status:** Phases 0–3b complete (2026-09-24, on `dev`). Phases 4-12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -17,10 +17,10 @@ README and this plan were swept for scenario-specific framing and examples.
 
 | | |
 |---|---|
-| Works | `extract → normalize → transcribe → refine → summarize → docx`, 9 real recordings, JSON checkpointing |
-| Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) |
+| Works | `extract → normalize → transcribe → refine → summarize → docx`, 9 real recordings, JSON checkpointing, stable `transcript_id` per recording |
+| Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base |
-| Tests | 33 unit tests (`uv run pytest`) + 1 integration test against real Ollama |
+| Tests | 58 unit tests (`uv run pytest`) + 1 integration test against real Ollama |
 | Missing | linting, API, eval harness, CI, frontend, logging, persistence |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
@@ -216,7 +216,11 @@ own (new Phase 3b).
 
 ---
 
-## Phase 3b — Stable transcript IDs & PII-aware summaries
+## Phase 3b — Stable transcript IDs & PII-aware summaries ✅ done
+
+Completed 2026-09-24, on `dev`. Built as planned, with both open calls resolved
+(see "Decisions made" #8-9) and one refinement found while testing against real
+recordings.
 
 Raised in review, not in the original plan: filenames should carry a stable
 identifier rather than being a slug tied only to a title, and a title/description
@@ -227,66 +231,100 @@ filename or document metadata that might travel more casually than the full doc)
 
 ### Stable transcript IDs
 
-- A `transcript_id` is assigned once per source file, at extract time, and is
-  **stable across `--force` re-runs** -- reprocessing a recording doesn't give it
-  a new identity, only a new result. Stored as `state["items"][key]["transcript_id"]`.
+- A `transcript_id` is assigned the first time a source file's state entry is
+  created (in practice, `stage_normalize` -- `stage_extract` doesn't touch
+  `state` at all, so "at extract time" from the original review discussion
+  became "at first touch"), and is **stable across `--force` re-runs** via
+  `dict.setdefault`: reprocessing a recording doesn't give it a new identity,
+  only a new result. Stored as `state["items"][key]["transcript_id"]`.
+  `load_state()` also migrates any pre-existing item missing one (legacy state
+  files, or anything from before this phase), so every downstream consumer can
+  rely on it being present unconditionally.
 - This is deliberately the *same* identifier Phase 7's API will expose as `job_id`
   and use as the SQLite `jobs` primary key -- introducing it now avoids retrofitting
   every downstream consumer later.
-- **Proposed format:** an 8-character random hex id (`secrets.token_hex(4)`) --
+- **Format, decided (#8): 8-character random hex** (`secrets.token_hex(4)`) --
   short, filesystem-friendly, effectively collision-free at this tool's personal
-  scale (2^32 space). Deliberately *not* time-sortable by construction; Phase 7's
-  SQLite row carries a real `created_at` column for that, so the ID itself doesn't
-  need to. A ULID (26 chars, ordered, no new heavy dependency but one more small
-  package) is the alternative if sorting a folder of `.docx` files by filename
-  should also sort them by creation time -- open call, default to hex unless told
-  otherwise.
-- **Filename becomes** `<transcript_id>_<slug>.docx` (or `<transcript_id>.docx`
+  scale (2^32 space). Not time-sortable by construction; Phase 7's SQLite row will
+  carry a real `created_at` column for that.
+- **Filename is** `<transcript_id>_<slug>.docx` (or `<transcript_id>.docx`
   with no summary yet), replacing `<slug>__<original-stem>.docx` from Phase 3.
-  The original filename is **dropped from the filename itself** but stays fully
-  traceable through three independent paths: the docx's own provenance header
-  (already prints "Ficheiro de origem: <original file>"), the `transcripts.json`
-  record keyed by the same id, and later the SQLite row. Open call: if losing the
-  original stem from the filename itself is a step too far for quick folder
-  browsing, it can go back in as a third segment
-  (`<transcript_id>_<slug>__<stem>.docx`) at no real cost.
-- `docx_filename()` and `stage_docx` change accordingly; existing tests for
-  filename collision behaviour get rewritten against the new scheme rather than
-  dropped, since the underlying guarantee (two recordings never collide) still
-  needs to hold.
+  **Decided (#9): the original stem is dropped from the filename**, staying
+  traceable through the docx's own provenance header, the `transcripts.json`
+  record, and (Phase 7) the SQLite row instead.
+- `docx_filename()`'s signature changed to `(transcript_id, summary, *, language,
+  anonymize=True)`; `stage_docx` passes `item["transcript_id"]`. Phase 3's filename
+  collision tests were rewritten against the new scheme, not dropped -- the
+  underlying guarantee (two recordings never collide) still holds, now via the id
+  rather than the stem.
 
 ### PII-aware summaries
 
 Two layers, not one -- a prompt instruction alone is a soft control an LLM can
 ignore under real content pressure:
 
-1. **Prompt-level:** both summarize templates (`prompts.py`) gain an explicit
-   instruction to avoid embedding full names, phone numbers, addresses, or ID/tax
-   numbers in `title`, `description`, or `topics`; refer to people by role or
-   relationship (`"a caller"`, `"the client"`, `"a family member"`) instead. This
-   applies only to the summary fields -- the transcript itself is never touched,
-   matching the review comment's own scoping.
-2. **Deterministic safety net:** a lightweight local NER pass over the generated
-   `title`/`description`/`topics` before they reach a filename slug or a docx
-   core property, redacting detected person names (and candidate phone/ID-number
-   patterns via regex) to a placeholder. Applied only to that metadata surface,
-   never to the transcript body -- consistent with "no content lost to the final
-   reviewer" from the Phase 3 review. Needs a short research spike (same rigor as
-   Phase 1) to pick the actual tool: candidates are spaCy's `pt_core_news_sm`/`lg`
-   (small, fast, local, decent PERSON/LOC recall) vs. a HF token-classification
-   model vs. regex-only for structured PII (phone/ID numbers) layered on top of
-   whichever NER choice handles names.
-3. **Config toggle:** `settings.anonymize_metadata: bool = True` (on by default,
-   since it's a safety net, not a feature someone opts into).
+1. **Prompt-level:** both summarize templates bumped to v2 (`summarize-pt-v2`/
+   `summarize-en-v2` in `prompts.py`, versioned per the id convention so an eval
+   run can tell v1 and v2 results apart) with an explicit instruction to avoid
+   full names, phone numbers, addresses, or ID/tax numbers in `title`,
+   `description`, or `topics`; refer to people by role or relationship instead.
+   Scoped to those three fields only -- the transcript itself is never touched.
+2. **Deterministic safety net, in `anonymize.py`:** spaCy's `pt_core_news_sm`
+   (~12 MB, CPU-only, no torch) for names, plus regex for email/phone/9-digit
+   ID numbers. Research spike resolved in favour of spaCy over a HF
+   token-classification model specifically for the "no torch" property --
+   `parakeet-mlx` had just been dropped from dependencies in Phase 2 for
+   pulling torch in, and reintroducing it for NER would have undone that.
+   Pinned as a real dependency via its wheel URL (`uv add "pt_core_news_sm @
+   https://..."`), not the imperative `spacy download` command, which does not
+   survive `uv sync` -- confirmed by testing (the model disappeared on the
+   first `uv sync` after an imperative install, before being pinned properly).
+3. **Config toggle:** `settings.anonymize_metadata: bool = True`, exactly as
+   specified.
 
-**Tests:** unit tests with fabricated PII-laden titles/descriptions asserting
-redaction; new transcript-id/filename tests covering the same collision guarantee
-as Phase 3's, now under the new scheme; an `integration`-marked test if the chosen
-NER approach needs a model download.
+**Scope decision made while implementing, worth recording:** the redaction
+applies to the filename slug and the docx's OOXML core properties
+(title/subject/keywords) -- never to the visible "Resumo" heading/paragraph in
+the document body, and never to the transcript. Reasoning: by the time someone
+has the `.docx` open, the full transcript with real names is already visible a
+few paragraphs below the summary. Redacting the abstract at that point would
+protect nothing and would just read as inconsistent (title says `[nome]`,
+transcript says the name fifteen times). The two surfaces that actually travel
+independently of opening the file -- the filename and embedded metadata -- are
+where redaction has real value, so that's where it's scoped.
 
-**Exit:** every generated filename carries a stable id; a title/description
-containing a fabricated name in a test fixture comes back redacted in the docx
-metadata and filename slug, unredacted in the transcript body.
+**A real accuracy gap found and fixed by testing against real generated titles,
+not just constructed examples** (same lesson as Phase 3's docx bug): spaCy's
+small model frequently mislabels an unfamiliar bare first name as `LOC`/`ORG`
+instead of `PER` -- an uncommon first name (changed in this writeup and in the
+test suite for privacy; the underlying recording is not in this repo) came back
+as both `LOC` and `ORG` in different real titles from this project's own
+recordings. Fixed by treating any single-token entity of *any* label as a name
+candidate, not just `PER`. A second, narrower gap: a name immediately following
+a sentence-initial capitalized word merges into one multi-token entity (e.g.
+"Contactar Marta" -> one `LOC` span), because the model reads the sentence's
+first word as capitalized-therefore-proper-noun.
+Fixed by redacting just the last token of a multi-token, non-`PER` entity that
+starts at position 0 -- accepting, as a documented trade-off, that a genuine
+multi-word institution name opening a title loses its last word too. Both
+fixes are covered by regression tests in `tests/test_anonymize.py`.
+
+**Tests:** 13 tests in `tests/test_anonymize.py` against the real spaCy model
+(not a fake -- its actual NER behaviour is what's under test, and the model is
+a pinned dependency, not a runtime download, so there's no reason to avoid it
+in the fast unit-test tier); `tests/test_pipeline_ids.py` for transcript-id
+assignment, stability across a save/reload cycle, and legacy-state migration;
+`tests/test_docx_writer.py` gained a class asserting metadata is redacted while
+the visible body is not; `tests/test_summarize.py`'s filename tests rewritten
+for the id-based scheme.
+
+**Exit:** met, and verified end-to-end against all 9 real recordings, not just
+the fixture set. Every generated filename now carries a stable id with no real
+name in any of the 9; docx core-properties metadata was clean (`meta_has_name =
+False`) on all 9, while the visible document body correctly still shows real
+names in the 4 of 9 recordings that actually discuss people by name --
+confirming the scope boundary works as designed, not just in unit tests. 58
+unit tests green (`uv run pytest`).
 
 ---
 
@@ -599,8 +637,9 @@ is a hard gate requiring your confirmation.
 | 16 GB RAM: whisper + 9B concurrently | Hard concurrency cap of 1–2; measure peak RSS in the benchmark |
 | CI can't run real models | Tiered CI; tiny models + fakes; self-hosted runner optional |
 | Scope: this is 12 phases (+3b) | Phases are independently shippable; stop anywhere and have something coherent |
-| LLM ignores the PII-avoidance prompt instruction | Layered with a deterministic NER pass on the metadata surface (Phase 3b) — never rely on prompt compliance alone |
-| Fakes-only tests miss real-format/real-content bugs | Already happened once (Phase 3's 255-char docx bug); Phase 4/10 fixtures now diversified with real audio specifically to close this |
+| LLM ignores the PII-avoidance prompt instruction | Layered with a deterministic NER pass on the metadata surface (Phase 3b, built) — never rely on prompt compliance alone |
+| Fakes-only tests miss real-format/real-content bugs | Already happened *twice* now — Phase 3's 255-char docx bug, and Phase 3b's spaCy PER/LOC mislabeling only visible on real generated titles; both fixed by testing against real recordings, not constructed examples. Phase 4/10 fixtures diversified with real audio specifically to close this |
+| Local NER model has real, known blind spots (small-model recall, sentence-initial merging) | Explicitly a safety net, not the primary control (the prompt instruction is); documented trade-offs in `anonymize.py` rather than chased indefinitely |
 
 ---
 
@@ -615,11 +654,5 @@ is a hard gate requiring your confirmation.
 | 5 | **MLflow:** local file-backed `mlruns/` + `mlflow ui`. No server until/unless dockerised. |
 | 6 | **No LLM-as-judge scoring.** Deterministic metrics only — see revised Phase 6. An LLM *does* write a human-readable interpretation report, logged as an MLflow artifact. |
 | 7 | **Summary language configurable:** `pt` or `en`, settings-driven. |
-
-**Open, from the Phase 3 review (2026-09-24) — proceeding with the stated default,
-flag if you'd rather change it:**
-
-| # | Open call | Default I'll build unless told otherwise |
-|---|---|---|
-| 8 | `transcript_id` format | 8-char random hex (`secrets.token_hex(4)`). Alternative: ULID, if filename-sort-by-creation-time matters more than brevity. |
-| 9 | Original filename stem in the new `.docx` name | Dropped from the filename (traceable via provenance header + JSON record instead). Alternative: keep it as a third segment, `<id>_<slug>__<stem>.docx`, if quick folder browsing matters more than a shorter name. |
+| 8 | **`transcript_id` format: 8-char random hex** (`secrets.token_hex(4)`), built in Phase 3b with no objection raised. ULID remains the fallback if filename-sort-by-creation-time ever matters more than brevity. |
+| 9 | **Original filename stem dropped from the new `.docx` name**, built in Phase 3b with no objection raised. Traceable via the docx's provenance header and the `transcripts.json` record instead. Reversible at low cost (`<id>_<slug>__<stem>.docx`) if quick folder browsing turns out to matter more. |

@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from .anonymize import redact_text
 from .prompts import get_summarize_template
 from .refine import ChatModel
 
@@ -130,15 +130,30 @@ def slugify(text: str, *, max_length: int = 60, language: str = "pt") -> str:
     return slug or _SLUG_FALLBACK.get(language, _SLUG_FALLBACK["en"])
 
 
-def docx_filename(original_key: str, summary: TranscriptSummary | None, *, language: str = "pt") -> str:
-    """Build a human-readable filename for the generated document.
+def docx_filename(
+    transcript_id: str,
+    summary: TranscriptSummary | None,
+    *,
+    language: str = "pt",
+    anonymize: bool = True,
+) -> str:
+    """Build the document filename: `<transcript_id>_<slug>.docx`, or just
+    `<transcript_id>.docx` if there's no summary yet.
 
-    The original file's stem is always appended, so two recordings can never
-    collide on their output filename even if their titles slugify to the same
-    string, or a summary is missing entirely -- traceability back to the
-    source audio never depends on the summary having worked.
+    `transcript_id` is what guarantees two recordings never collide, even if
+    they summarize to the same title or a summary is missing entirely --
+    traceability back to the source audio never depends on the summary having
+    worked, and doesn't need to live in the filename: the docx's own
+    provenance header and the transcripts.json record (both keyed by this
+    same id) already carry it.
+
+    When `anonymize` is set (the default), the title is passed through the
+    NER/regex safety net in anonymize.py before being slugified, so a name
+    the summarize prompt failed to avoid doesn't end up in a filename. See
+    anonymize.py's module docstring for why this only touches the filename
+    and docx metadata, never the transcript body.
     """
-    stem = Path(original_key).stem
     if summary is None:
-        return f"{stem}.docx"
-    return f"{slugify(summary.title, language=language)}__{stem}.docx"
+        return f"{transcript_id}.docx"
+    title = redact_text(summary.title, language=language) if anonymize else summary.title
+    return f"{transcript_id}_{slugify(title, language=language)}.docx"
