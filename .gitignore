@@ -1,0 +1,86 @@
+# ---------------------------------------------------------------------------
+# Secrets  --  keep this block first; nothing here may ever reach the remote.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.streamlit/secrets.toml
+
+# ---------------------------------------------------------------------------
+# Private source material
+# ---------------------------------------------------------------------------
+# Real recordings and anything derived from them. This repo is public; audio
+# and transcripts of real people must stay local. Test fixtures are explicitly
+# re-included at the bottom of this file.
+Arquivo.zip
+*.zip
+tmp/
+output/
+data/
+
+*.m4a
+*.opus
+*.mp3
+*.wav
+*.ogg
+*.flac
+*.aac
+*.wma
+*.amr
+*.m4b
+*.docx
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info/
+.venv/
+venv/
+
+# ---------------------------------------------------------------------------
+# Tooling caches and reports
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.log
+logs/
+
+# ---------------------------------------------------------------------------
+# Runtime artifacts
+# ---------------------------------------------------------------------------
+mlruns/
+mlartifacts/
+*.db
+*.sqlite
+*.sqlite3
+
+# ---------------------------------------------------------------------------
+# Editors and OS
+# ---------------------------------------------------------------------------
+.DS_Store
+.idea/
+*.swp
+.claude/settings.local.json
+
+# ---------------------------------------------------------------------------
+# Re-include committed test fixtures
+# ---------------------------------------------------------------------------
+# Small, synthetic or public-domain clips the test suite needs. These are the
+# only audio files allowed in the repository.
+!tests/fixtures/
+!tests/fixtures/**/*.wav
+!tests/fixtures/**/*.m4a
+!tests/fixtures/**/*.opus
+!tests/fixtures/**/*.json
