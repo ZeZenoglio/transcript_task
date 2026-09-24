@@ -46,9 +46,17 @@ _CORE_PROP_LIMIT = 255
 
 
 def _truncated(text: str, limit: int = _CORE_PROP_LIMIT) -> str:
+    """Cut `text` to fit `limit` chars, breaking on a word boundary where
+    possible rather than mid-word -- this only ever touches invisible
+    document metadata (see module note above), but a clean cut still reads
+    better in a file-properties dialog than a word chopped in half."""
     if len(text) <= limit:
         return text
-    return text[: limit - 1].rstrip() + "…"
+    cut = text[: limit - 1]
+    boundary = cut.rfind(" ")
+    if boundary > limit * 0.6:  # don't sacrifice too much text hunting for a space
+        cut = cut[:boundary]
+    return cut.rstrip(" ,;:.") + "…"
 
 
 def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None:

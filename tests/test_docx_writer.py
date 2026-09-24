@@ -42,6 +42,16 @@ class TestTruncated:
         assert len(_truncated("x" * 255)) == 255
         assert len(_truncated("x" * 256)) <= 255
 
+    def test_cuts_on_a_word_boundary_not_mid_word(self):
+        text = "palavra " * 40  # plenty of spaces near the 255-char cut point
+        result = _truncated(text)
+        assert result.endswith("…")
+        # the character right before the ellipsis must end a whole word --
+        # i.e. it's preceded by the start-of-string or a space
+        before_ellipsis = result[:-1]
+        assert before_ellipsis == "" or text.startswith(before_ellipsis)
+        assert not before_ellipsis or text[len(before_ellipsis)] in (" ", "")
+
 
 class TestWriteDocxWithSummary:
     def test_long_description_does_not_raise(self, tmp_path):
