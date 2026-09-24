@@ -364,6 +364,33 @@ decided on for this project; rather than revisit the decision for a
 single-user local tool, `eval/mlflow_sink.py` sets the opt-out flag so
 `mlruns/` + `mlflow ui` still work exactly as intended.
 
+**A second, more serious bug, found while proving the regression gate works
+on real data:** swapping to a much smaller model (`llama3.2:1b` in place of
+`qwen3.5:9b`) to demonstrate `compare`'s non-zero exit — the plan's actual exit
+criterion for this phase — hit a real runaway generation loop: one clip's
+refine call generated 163,840 tokens over 51 minutes instead of stopping
+naturally, because nothing capped output length. `settings.llm_options` set
+`temperature` and `num_ctx` but never a token-generation ceiling, so a model
+that doesn't reliably stop had nothing bounding it short of exhausting its
+context. This was a real gap in the *production* pipeline, not just the eval
+harness — anyone swapping `llm_model` to a different model could hit the same
+thing. Fixed by adding `llm_num_predict` (default 8192) to `Settings`. With
+that real data captured, `compare` shows exactly what the plan asked for:
+
+```
+$ uv run python scripts/benchmark.py compare smoke-test-1 smoke-worse-llm
+| metric | baseline | candidate | delta | regressed |
+|---|---|---|---|---|
+| wer_raw | 0.0342 | 0.0342 | +0.0000 |  |
+| wer_refined | 0.1084 | 1129.1570 | +1129.0486 | YES |
+$ echo $?
+1
+```
+
+`wer_raw` is unchanged (only the LLM was swapped, not the ASR model) while
+every refine-stage metric is flagged — the regression gate correctly points at
+which stage broke, not just that something did.
+
 ## Audio handling
 
 Recordings commonly arrive in a mix of formats and sample rates — the normalize

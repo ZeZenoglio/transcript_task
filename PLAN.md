@@ -20,7 +20,7 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
-| Tests | 173 unit tests (`uv run pytest`) + 2 integration tests against real Ollama/mlx-whisper |
+| Tests | 175 unit tests (`uv run pytest`) + 2 integration tests against real Ollama/mlx-whisper |
 | Benchmark data | FLEURS pt_br test split (919 clips) fetchable via `scripts/fetch_dataset.py`; 4-clip diversified fixture committed under `tests/fixtures/` |
 | Eval harness | `scripts/benchmark.py run/compare` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
 | Missing | linting, API, CI, frontend, logging, persistence |
@@ -624,12 +624,54 @@ precisely the caveat Phase 4 already recorded about this dataset.
 **Exit, verified for real:** `--tier smoke` ran end-to-end with 0 errors, produced
 a valid MLflow run (`mlflow.tracking.MlflowClient` round-trip confirmed:
 `wer_refined_mean` readable back from the tracking store) and local
-`benchmarks/smoke-test-1/` artifacts. 173 unit tests green, covering hand-computed
+`benchmarks/smoke-test-1/` artifacts. 175 unit tests green, covering hand-computed
 WER/CER pairs, the normalizer (casefolding, digit expansion, idempotence,
 accent-folding on/off, a pathological huge-digit-run input that would otherwise
 crash `num2words`), stratified-sampling determinism and duration coverage, the
 regression-gate's threshold logic including the "metric missing from one side is
 skipped, not flagged" edge case, and MLflow logging against a temp tracking dir.
+
+**A second real bug, found by the exit-criterion demo itself, and fixed:** to
+verify "deliberately swapping to a worse model shows a visible metric drop and a
+non-zero compare exit" for real rather than just in unit tests, `--tier smoke`
+was re-run with `TRANSCRIPT_LLM_MODEL=llama3.2:1b` in place of `qwen3.5:9b`. One
+of the 4 clips took **3041 seconds** (~51 minutes) for a single refine call on a
+~10s audio clip, generating **163,840 tokens** — a runaway repetition loop that
+never stopped on its own. `wer_refined` for that clip came back as 4515 (WER has
+no upper bound: it's edit distance over reference length, and the "refined"
+output was thousands of times longer than the raw transcript). Root cause:
+`settings.llm_options` set `temperature` and `num_ctx` but no cap on *generated*
+tokens, so a model that doesn't reliably stop had nothing bounding it short of
+context exhaustion. Fixed by adding `llm_num_predict` (default 8192, generous for
+a single recording's refine/summary output, verified against the real 202s-refine
+recording's scale) to `Settings`, threaded into `llm_options` as Ollama's
+`num_predict`. This is a pipeline robustness fix, not just an eval-harness one:
+the same runaway risk existed in production `pipeline.py` for anyone who
+switched `llm_model` to a smaller/different model, silently, with no timeout.
+Regression-tested in `tests/test_settings.py`.
+
+With the exit-criterion demo's real (if extreme) data now captured, `compare`
+against it works exactly as specified:
+
+```
+$ uv run python scripts/benchmark.py compare smoke-test-1 smoke-worse-llm
+
+| metric | baseline | candidate | delta | regressed |
+|---|---|---|---|---|
+| wer_raw | 0.0342 | 0.0342 | +0.0000 |  |
+| wer_refined | 0.1084 | 1129.1570 | +1129.0486 | YES |
+| cer_refined | 0.0488 | 1165.9311 | +1165.8823 | YES |
+| semdist_refined | 0.0289 | 0.0788 | +0.0499 | YES |
+
+[benchmark] REGRESSION detected past threshold.
+$ echo $?
+1
+```
+
+`wer_raw`/`cer_raw`/`semdist_raw` correctly show **no** change (only the LLM was
+swapped, not the ASR model) while every refine-stage metric is flagged — the
+comparator distinguishing which stage actually regressed, not just "something
+got worse," is exactly the point.
 
 ---
 

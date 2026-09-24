@@ -67,10 +67,24 @@ class Settings(BaseSettings):
     llm_model: str = "qwen3.5:9b"
     llm_temperature: float = 0.2
     llm_num_ctx: int = 16384
+    # A hard cap on generated tokens per call. Without one, a model that
+    # doesn't reliably stop can run away: benchmarking a smaller model
+    # (Phase 6) hit this for real -- llama3.2:1b given the refine prompt
+    # generated 163,840 tokens (a wall of repeated text) over 3041 seconds
+    # for a single ~10s audio clip, instead of the ~30 tokens a working
+    # refine call takes. 8192 is generous for a single recording's refine
+    # or summary output (FLEURS clips need under 100; the longest real
+    # recording measured so far needed far less) while bounding the worst
+    # case to minutes, not the better part of an hour.
+    llm_num_predict: int = 8192
 
     @property
     def llm_options(self) -> dict:
-        return {"temperature": self.llm_temperature, "num_ctx": self.llm_num_ctx}
+        return {
+            "temperature": self.llm_temperature,
+            "num_ctx": self.llm_num_ctx,
+            "num_predict": self.llm_num_predict,
+        }
 
     # --- summarization -------------------------------------------------
     # Language of the generated title/description/topics. The transcript
