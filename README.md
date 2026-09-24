@@ -226,6 +226,7 @@ src/transcript_task/
   docx_writer.py   # Word document generation
   pipeline.py      # stage orchestration + CLI, transcript_id assignment
 main.py            # entry point
+scripts/           # fetch_dataset.py, build_fixtures.py — see Benchmark dataset below
 tests/             # pytest suite — see the Testing section below
 ```
 
@@ -246,15 +247,61 @@ Unit tests fake the LLM client (`tests/fakes.py`) so schema validation, the
 retry-then-fallback path, and filename generation all run in milliseconds with
 no model calls. `anonymize.py`'s tests use the real (small, local) spaCy model
 rather than a fake, since its actual entity-recognition behaviour is the thing
-under test. The one `integration`-marked test calls a real local Ollama model
-and skips itself if Ollama isn't reachable.
+under test. `audio.py`'s tests run against four real, diverse, public-domain
+speech clips (see below) rather than only synthetic tones, precisely because
+real content has repeatedly caught bugs synthetic fixtures didn't (see the
+next section). The one `integration`-marked test calls a real local Ollama
+model and skips itself if Ollama isn't reachable.
+
+## Benchmark dataset
+
+For evaluation and for real-audio test fixtures, this project uses
+[Google FLEURS](https://huggingface.co/datasets/google/fleurs) (`pt_br`, CC BY
+4.0) rather than the private recordings it was originally developed against
+(see [docs/research-stt-landscape.md](docs/research-stt-landscape.md) and
+[PLAN.md](PLAN.md) for why, and its honest limitation: FLEURS is clean read
+speech, not the noisy conversational audio this tool actually targets, so
+scores against it are a *relative* regression signal, not an absolute quality
+claim).
+
+```bash
+uv run python scripts/fetch_dataset.py          # full test split, ~277 MB, 919 clips -> data/fleurs_pt/ (gitignored)
+uv run python scripts/build_fixtures.py         # picks 4 clips, re-encodes each to a different format -> tests/fixtures/
+```
+
+`data/` is gitignored and regenerated on demand; the small, diversified subset
+in `tests/fixtures/` (4 clips, ~660 KB, spanning ~4s to ~37s, one each in
+`.wav`/`.mp3`/`.m4a`/`.opus`) is committed so tests and CI don't need the full
+download. See `tests/fixtures/NOTICE.md` for attribution.
+
+**Two real bugs found and fixed while building this**, on top of the docx and
+NER bugs from Phases 3 and 3b -- the fourth time in a row that testing against
+real data, not just plausible-looking fakes, has caught something a
+synthetic fixture wouldn't have:
+- The dataset's `num_samples` field, used to compute duration without
+  decoding audio, disagreed with the real ffprobe-measured duration on ~60%
+  of a random sample -- by several seconds in some cases. Fixed by measuring
+  duration from the file actually written to disk instead of trusting a
+  metadata field.
+- FLEURS' `id` field is a shared sentence/prompt id (multiple speakers read
+  the same sentence), not a unique row id. Keying output filenames by it was
+  silently overwriting one recording with another: of 919 rows, only 349 had
+  a unique `id`, so 570 clips were being lost to filename collisions with no
+  error raised anywhere. Fixed by keying filenames on each row's position in
+  the split instead, which cannot collide by construction.
 
 ## Audio handling
 
 Recordings commonly arrive in a mix of formats and sample rates — the normalize
 stage handles that automatically. It probes each file with `ffprobe` and converts
-anything that is not already 16 kHz mono PCM to that format, downmixing stereo as
-needed; files already in the target format are copied rather than re-encoded.
+anything that is not already 16 kHz mono **16-bit PCM** (`pcm_s16le`) to that
+format, downmixing stereo as needed; files already in the exact target format
+are copied rather than re-encoded. That "exact" matters: `.wav` can just as
+easily hold 32-bit float PCM as 16-bit (FLEURS' own files do — see the
+benchmark dataset section above), and a version of this check that only
+compared sample rate and channel count would silently skip re-encoding a
+float32 file. Caught by testing against a real FLEURS clip, not a synthetic
+one, and now covered by a regression test in `tests/test_audio.py`.
 macOS `__MACOSX/._*` resource-fork entries are skipped during zip extraction —
 they share the real files' extensions but contain no audio.
 

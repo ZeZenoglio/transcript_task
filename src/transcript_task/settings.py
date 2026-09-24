@@ -87,9 +87,12 @@ class Settings(BaseSettings):
 
     # --- audio -------------------------------------------------------------
     # Whisper expects 16 kHz mono. Anything not already in that shape gets
-    # converted by ffmpeg.
+    # converted by ffmpeg. target_codec matters too, not just rate/channels --
+    # a WAV can hold float32 PCM as easily as 16-bit (FLEURS' own files do),
+    # and is_already_target_format() checks all three before skipping ffmpeg.
     target_sample_rate: int = 16000
     target_channels: int = 1
+    target_codec: str = "pcm_s16le"
     audio_extensions: frozenset[str] = Field(
         default_factory=lambda: frozenset({
             ".m4a", ".opus", ".mp3", ".wav", ".ogg", ".flac",

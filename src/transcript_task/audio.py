@@ -60,9 +60,21 @@ def probe(path: Path) -> AudioInfo:
 
 
 def is_already_target_format(path: Path, info: AudioInfo, settings: Settings) -> bool:
-    """True if `path` is already 16kHz mono PCM WAV and can just be copied."""
+    """True if `path` is already 16kHz mono 16-bit PCM WAV and can just be
+    copied, rather than needing an ffmpeg pass.
+
+    Checks the actual sample format (`info.codec`), not just the sample rate,
+    channel count and `.wav` extension -- a WAV can just as easily hold
+    float32 PCM as 16-bit PCM (FLEURS' own files do; see
+    tests/fixtures/audio/fleurs_01839.wav, kept specifically to exercise this
+    path). mlx-whisper's own audio loader tolerates float32 fine, so this
+    wasn't silently producing bad transcripts, but this function's job is to
+    guarantee "already normalized", and a codec it never checked wasn't
+    actually guaranteeing that.
+    """
     return (
         path.suffix.lower() == ".wav"
+        and info.codec == settings.target_codec
         and info.sample_rate == settings.target_sample_rate
         and info.channels == settings.target_channels
     )
@@ -77,7 +89,7 @@ def convert_to_target(src: Path, dst: Path, settings: Settings) -> None:
         ["ffmpeg", "-v", "error", "-y", "-i", str(src),
          "-ac", str(settings.target_channels),
          "-ar", str(settings.target_sample_rate),
-         "-c:a", "pcm_s16le", str(dst)],
+         "-c:a", settings.target_codec, str(dst)],
         capture_output=True, text=True,
     )
     if proc.returncode != 0:

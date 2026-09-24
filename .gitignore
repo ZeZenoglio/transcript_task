@@ -77,10 +77,14 @@ mlartifacts/
 # ---------------------------------------------------------------------------
 # Re-include committed test fixtures
 # ---------------------------------------------------------------------------
-# Small, synthetic or public-domain clips the test suite needs. These are the
-# only audio files allowed in the repository.
+# A small, diversified subset of the public CC-BY FLEURS benchmark (Phase 4) --
+# not synthetic, but public-domain-license and containing no real person's
+# recording. These are the only audio files allowed in the repository.
 !tests/fixtures/
 !tests/fixtures/**/*.wav
 !tests/fixtures/**/*.m4a
 !tests/fixtures/**/*.opus
+!tests/fixtures/**/*.mp3
 !tests/fixtures/**/*.json
+!tests/fixtures/**/*.jsonl
+!tests/fixtures/**/*.md
