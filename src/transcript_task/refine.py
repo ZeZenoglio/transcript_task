@@ -32,6 +32,12 @@ class ChatModel(Protocol):
 class OllamaChatModel:
     def __init__(self, model: str) -> None:
         self.model = model
+        # Populated after every call with Ollama's own token/timing counters
+        # (prompt_eval_count, eval_count, *_duration in ns) -- read by the
+        # eval harness (Phase 6) for tokens/s and cold-vs-warm load time.
+        # `chat`'s return type stays `str` regardless: this is an optional
+        # side channel, not part of the ChatModel protocol every stage relies on.
+        self.last_usage: dict | None = None
 
     def chat(self, *, system: str, user: str, options: dict, format: dict | None = None) -> str:
         import ollama
@@ -46,6 +52,12 @@ class OllamaChatModel:
             format=format,
             options=options,
         )
+        self.last_usage = {
+            "prompt_tokens": response.get("prompt_eval_count"),
+            "completion_tokens": response.get("eval_count"),
+            "total_duration_ns": response.get("total_duration"),
+            "load_duration_ns": response.get("load_duration"),
+        }
         text = response["message"]["content"].strip()
         return _strip_markdown_fence(text)
 

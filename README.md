@@ -225,8 +225,9 @@ src/transcript_task/
   anonymize.py     # PII safety net (NER + regex) for filenames/docx metadata
   docx_writer.py   # Word document generation
   pipeline.py      # stage orchestration + CLI, transcript_id assignment
+  eval/            # evaluation harness (Phase 6) — see below
 main.py            # entry point
-scripts/           # fetch_dataset.py, build_fixtures.py — see Benchmark dataset below
+scripts/           # fetch_dataset.py, build_fixtures.py, benchmark.py — see below
 tests/             # pytest suite — see the Testing section below
 ```
 
@@ -250,8 +251,10 @@ rather than a fake, since its actual entity-recognition behaviour is the thing
 under test. `audio.py`'s tests run against four real, diverse, public-domain
 speech clips (see below) rather than only synthetic tones, precisely because
 real content has repeatedly caught bugs synthetic fixtures didn't (see the
-next section). The one `integration`-marked test calls a real local Ollama
-model and skips itself if Ollama isn't reachable.
+next section). Two `integration`-marked tests call real local models and skip
+themselves if Ollama isn't reachable: one exercises `summarize_transcript`
+directly, the other runs a full clip through the real ASR + LLM pipeline via
+the eval harness below and checks the resulting WER against ground truth.
 
 ## Benchmark dataset
 
@@ -289,6 +292,77 @@ synthetic fixture wouldn't have:
   a unique `id`, so 570 clips were being lost to filename collisions with no
   error raised anywhere. Fixed by keying filenames on each row's position in
   the split instead, which cannot collide by construction.
+
+## Evaluation harness
+
+A pragmatic, repeatable way to know whether a model or prompt change helped,
+built on `scripts/benchmark.py` and `src/transcript_task/eval/`:
+
+```bash
+uv run python scripts/benchmark.py run --tier smoke --tag baseline    # 4 committed clips, no download
+uv run python scripts/benchmark.py run --tier quick --tag baseline    # stratified n=30, ~5 min
+uv run python scripts/benchmark.py run --tier full  --tag release-1.0 # the whole 919-clip split
+
+# swap models via the same env vars Settings always honors
+TRANSCRIPT_LLM_MODEL=qwen3.5:4b uv run python scripts/benchmark.py run --tier quick --tag candidate
+
+uv run python scripts/benchmark.py compare baseline candidate   # exits 1 on regression -- what CI consumes
+```
+
+**Metrics**, all pure functions in `eval/metrics.py`, independent of MLflow:
+- **WER/CER** (`jiwer`) after a Portuguese-aware normalizer (`eval/normalizer.py`)
+  — Whisper's bundled one is English-only. It casefolds, strips punctuation, and
+  expands digit runs to number words (`12` → `doze`) via `num2words`, since
+  Whisper sometimes writes digits where FLEURS' ground truth spells them out —
+  a real, spurious source of WER that has nothing to do with transcription
+  quality.
+- **SemDist**: 1 − cosine similarity between multilingual sentence embeddings
+  (`paraphrase-multilingual-MiniLM-L12-v2`), behind the same `Embedder` protocol
+  pattern as `Transcriber`/`ChatModel`.
+- **Refine, scored against the same ground truth, before and after**: this is
+  the trick that turns an unmeasurable stage into a measurable one. If cleanup
+  helps, WER drops; if the LLM paraphrases, it rises.
+- **Summary stage**: deterministic only (schema-validity rate, retry/fallback
+  rate, field-length and topic-count conformance, filename-slug uniqueness,
+  language-variant agreement, description-vs-transcript embedding distance).
+  No LLM-as-judge scoring anywhere in this harness.
+- **Performance**: realtime factor, per-stage latency (p50/p95), tokens/s for
+  the LLM stages, peak RSS.
+
+**Tiers** (`eval/tiers.py`): `smoke` (the 4 committed fixtures), `quick`
+(duration-stratified random n=30, fixed seed — stratified so the sample isn't
+all short easy clips), `full` (the whole split).
+
+**MLflow**: local file-backed tracking (`mlruns/`, `mlflow ui`), one run per
+benchmark. Every run also writes `benchmarks/<tag>/results.json` + `table.md`
+independent of MLflow — metric computation never depends on the tracking
+sink, so ripping MLflow out would touch one file (`eval/mlflow_sink.py`).
+A local LLM writes a short, non-scoring markdown **interpretation** of the
+metrics table afterward (`eval/interpretation.py`) — it reads only the
+numbers already computed, never the audio or transcripts, and produces no
+score of its own.
+
+**What the first real smoke run found:** across the 4 committed FLEURS clips,
+raw ASR WER averaged 0.034, but WER *after* the refine stage averaged 0.108 —
+refine consistently made the transcript *further* from ground truth, not
+closer. This isn't a harness bug; it's a real, honest limitation the
+benchmark is supposed to surface: FLEURS is clean, unambiguous read speech,
+so ASR output already has almost nothing to clean up, while refine's
+paraphrasing risk (rewording a correct sentence into a different correct
+sentence) still applies. It's exactly the trade-off flagged in
+[docs/research-stt-landscape.md](docs/research-stt-landscape.md) and PLAN.md:
+FLEURS is a *relative* regression signal, not a verdict on whether refine
+helps on the noisier, disfluent conversational audio the tool actually
+targets, where refine has real disfluencies and hesitations to remove that
+FLEURS' clips simply don't contain.
+
+**Found and fixed while building this:** MLflow 3.x put its plain filesystem
+tracking backend (`file:./mlruns`) into maintenance mode and now refuses it
+unless `MLFLOW_ALLOW_FILE_STORE` is set, nudging new projects toward a
+SQLite/DB-backed store. That collided with the local-file-backed tracking
+decided on for this project; rather than revisit the decision for a
+single-user local tool, `eval/mlflow_sink.py` sets the opt-out flag so
+`mlruns/` + `mlflow ui` still work exactly as intended.
 
 ## Audio handling
 

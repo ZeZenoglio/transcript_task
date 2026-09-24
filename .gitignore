@@ -62,6 +62,7 @@ logs/
 # ---------------------------------------------------------------------------
 mlruns/
 mlartifacts/
+benchmarks/
 *.db
 *.sqlite
 *.sqlite3

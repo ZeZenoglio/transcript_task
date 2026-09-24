@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–5 complete (2026-09-24, on `dev`). Phases 6-12 pending. All open
+**Status:** Phases 0–6 complete (2026-09-24, on `dev`). Phases 7-12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -20,9 +20,10 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
-| Tests | 80 unit tests (`uv run pytest`) + 1 integration test against real Ollama |
+| Tests | 173 unit tests (`uv run pytest`) + 2 integration tests against real Ollama/mlx-whisper |
 | Benchmark data | FLEURS pt_br test split (919 clips) fetchable via `scripts/fetch_dataset.py`; 4-clip diversified fixture committed under `tests/fixtures/` |
-| Missing | linting, API, eval harness, CI, frontend, logging, persistence |
+| Eval harness | `scripts/benchmark.py run/compare` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
+| Missing | linting, API, CI, frontend, logging, persistence |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
 As of Phase 2, the code is a proper `src/` package (`src/transcript_task/`) with a
@@ -453,7 +454,7 @@ further functional verification was needed here.
 
 ---
 
-## Phase 6 — Evaluation harness + MLflow
+## Phase 6 — Evaluation harness + MLflow ✅ done
 
 The core of the request: a pragmatic, repeatable way to know whether a model or prompt
 change helped.
@@ -530,6 +531,105 @@ regression-gate exit-code logic, MLflow logging against a temp tracking dir.
 
 **Exit:** `--tier quick` completes in ~5 min and produces an MLflow run; deliberately
 swapping to a worse model shows a visible metric drop and a non-zero compare exit.
+
+### Implementation notes (completed 2026-09-24, on `dev`)
+
+Built as `src/transcript_task/eval/` (pure, MLflow-independent metric functions,
+tiering, results/report dataclasses, comparison/regression gate, MLflow sink) plus
+`scripts/benchmark.py` (`run` / `compare` CLI), following the plan closely:
+
+- `eval/normalizer.py` — pt-aware normalizer: NFKC + casefold, `num2words`-based
+  digit expansion (`12` → `doze`), punctuation stripping, optional accent-folding.
+  Accents kept by default deliberately — "más"/"mas" are different words, folding
+  them by default would hide real errors, not just cosmetic ones.
+- `eval/metrics.py` — `word_error_rate`/`character_error_rate` (jiwer, both sides
+  normalized identically), `semantic_distance` (embedding cosine distance behind
+  an `Embedder` protocol — same DI pattern as `Transcriber`/`ChatModel`, so tests
+  never load the real MiniLM model), `refine_delta` (WER before/after refine
+  against the same ground truth — the "clever part" from the plan), `content_recall`,
+  `length_ratio`, `evaluate_summary` (deterministic conformance checks against
+  `TranscriptSummary`), `slug_uniqueness`.
+- `eval/tiers.py` — `smoke` (the 4 committed fixtures), `quick` (duration-bucketed
+  stratified sample, fixed seed, default n=30), `full` (everything).
+- `eval/results.py` — `ClipResult`/`BenchmarkResult`, JSON round-trip, markdown
+  table rendering (aggregate metrics + summary-stage metrics + worst-WER clips).
+- `eval/compare.py` — diffs mean WER/CER/SemDist between two runs; a metric
+  "regresses" if it worsens by more than an absolute threshold (default 0.02) in
+  *both* runs having measured it (a metric missing from either side is skipped,
+  not treated as a regression by omission).
+- `eval/interpretation.py` — sends the already-computed markdown metrics table to
+  the local LLM and asks for a short interpretation; never raises (an LLM outage
+  degrades to a placeholder string, since the deterministic metrics it would have
+  described are already safely saved).
+- `eval/mlflow_sink.py` — local file-backed MLflow logging, **and** always writes
+  `benchmarks/<tag>/{results.json,table.md,interpretation.md}` regardless, per the
+  plan's explicit fallback design.
+- `eval/runner.py` — the only module that imports the real ASR/LLM code; runs one
+  clip through normalize → transcribe → refine → summarize using the same
+  `Transcriber`/`ChatModel` building blocks as `pipeline.py`, not `pipeline.py`'s
+  own batch/checkpoint machinery (which is oriented around `output/transcripts.json`
+  and writing real `.docx` files — neither of which a benchmark run wants).
+
+**One real, load-bearing bug found while building this, unrelated to the pipeline
+itself:** MLflow 3.x put the plain filesystem tracking backend (`file:./mlruns`)
+into maintenance mode — `mlflow.set_tracking_uri("file:...")` now raises outright
+unless `MLFLOW_ALLOW_FILE_STORE` is set, nudging new projects toward a SQLite/DB
+backend. This directly collided with decision #5 below (local file-backed
+tracking, no server). Rather than revisit that decision for a single-user local
+tool, `eval/mlflow_sink.py` sets the opt-out env var at import time — `mlruns/` +
+`mlflow ui` behave exactly as originally decided; the DB backend was never
+actually needed here, just newly gatekept.
+
+**A non-obvious design call in the eval package: `used_retry`/`used_fallback`
+detection is inferred, not reported.** `summarize_transcript` doesn't expose
+whether it needed its one retry — doing so would mean changing a function every
+other stage already depends on, just to serve the benchmark. Instead
+`eval/runner.py` wraps the `ChatModel` passed to `summarize_transcript` in a
+small local `_CountingChatModel` that counts calls (1 = no retry needed, 2 = retry
+was attempted) and combines that with a structural check (does the returned
+summary equal `TranscriptSummary.fallback()` exactly) to tell "retried and
+succeeded" apart from "retried and still fell back." Non-invasive, and the
+distinction is real: it showed up immediately in the smoke run below (both flags
+correctly read `0.0` — the 9B model got every summary right on the first try).
+
+**First real benchmark run (`smoke-test-1`, `--tier smoke`, 4 committed clips,
+`mlx-whisper large-v3-turbo` + `qwen3.5:9b`)** — the harness's first real result,
+not just "it runs without crashing":
+
+| metric | mean |
+|---|---|
+| wer_raw | 0.0342 |
+| **wer_refined** | **0.1084** |
+| cer_raw | 0.0140 |
+| cer_refined | 0.0488 |
+| schema_valid_rate | 1.0 |
+| retry_rate / fallback_rate | 0.0 / 0.0 |
+
+**Refine made WER *worse* on every one of the 4 clips**, not better — exactly the
+failure mode the plan's "clever part" (scoring refine against ground truth
+before/after) exists to catch, and it caught it on the very first real run. This
+isn't a harness bug: FLEURS is clean, unambiguous read speech, so ASR output
+already has almost nothing to clean up, while refine's paraphrasing risk (correct
+wording rewritten into different-but-still-correct wording) still fully applies
+and is the only thing left for it to do. The LLM-written interpretation report
+(reproduced in full in `benchmarks/smoke-test-1/interpretation.md`) independently
+identified the same thing from the metrics table alone and recommended
+investigating `refine-pt-v1` — without inventing a single number not already in
+the table, which is exactly what it's scoped to do. This is documented as an
+honest limitation in the README, not papered over: it says nothing about whether
+refine helps on the noisier, disfluent conversational audio the tool actually
+targets (FLEURS clips have no hesitations or disfluencies to remove), which is
+precisely the caveat Phase 4 already recorded about this dataset.
+
+**Exit, verified for real:** `--tier smoke` ran end-to-end with 0 errors, produced
+a valid MLflow run (`mlflow.tracking.MlflowClient` round-trip confirmed:
+`wer_refined_mean` readable back from the tracking store) and local
+`benchmarks/smoke-test-1/` artifacts. 173 unit tests green, covering hand-computed
+WER/CER pairs, the normalizer (casefolding, digit expansion, idempotence,
+accent-folding on/off, a pathological huge-digit-run input that would otherwise
+crash `num2words`), stratified-sampling determinism and duration coverage, the
+regression-gate's threshold logic including the "metric missing from one side is
+skipped, not flagged" edge case, and MLflow logging against a temp tracking dir.
 
 ---
 
@@ -718,3 +818,5 @@ is a hard gate requiring your confirmation.
 | 7 | **Summary language configurable:** `pt` or `en`, settings-driven. |
 | 8 | **`transcript_id` format: 8-char random hex** (`secrets.token_hex(4)`), built in Phase 3b with no objection raised. ULID remains the fallback if filename-sort-by-creation-time ever matters more than brevity. |
 | 9 | **Original filename stem dropped from the new `.docx` name**, built in Phase 3b with no objection raised. Traceable via the docx's provenance header and the `transcripts.json` record instead. Reversible at low cost (`<id>_<slug>__<stem>.docx`) if quick folder browsing turns out to matter more. |
+| 10 | **MLflow file-store opt-out kept, DB backend not adopted.** MLflow 3.x refuses `file:./mlruns` unless `MLFLOW_ALLOW_FILE_STORE` is set (see Phase 6). Set programmatically in `eval/mlflow_sink.py` rather than migrating to SQLite, since decision #5's reasoning (single-user local tool, no server) still holds — the DB backend solves a multi-writer problem this project doesn't have. |
+| 11 | **Regression threshold: 0.02 absolute** (2 percentage points of WER/CER/SemDist), built in Phase 6 with no objection raised. Configurable via `compare --threshold`; a metric missing from either compared run is skipped rather than flagged, so comparing runs of different tiers never fails spuriously. |
