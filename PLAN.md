@@ -2,8 +2,8 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phase 0 complete (2026-09-24). Phases 1-12 pending. All open decisions
-answered — see *Decisions made* at the end.
+**Status:** Phases 0–1 complete (2026-09-24, on `dev`). Phases 2-12 pending. All open
+decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
 utility — one recording or a zip of many in, reviewed Word transcripts out. It is
@@ -58,9 +58,10 @@ branch-name decision.
 
 ---
 
-## Phase 1 — Research: local vs. public STT, quality vs. speed
+## Phase 1 — Research: local vs. public STT, quality vs. speed ✅ done
 
-Desk research, written up in `docs/research-stt-landscape.md`. No code.
+Completed 2026-09-24, on the `dev` branch. Written up in
+[`docs/research-stt-landscape.md`](docs/research-stt-landscape.md). No code changed.
 
 - Cloud/API baselines to compare against: OpenAI `whisper-1` / `gpt-4o-transcribe`,
   Deepgram Nova-3, AssemblyAI Universal, Azure Speech, Google Chirp 2, ElevenLabs Scribe.
@@ -70,6 +71,17 @@ Desk research, written up in `docs/research-stt-landscape.md`. No code.
   FLEURS pt WER 3.65% for large-v3) so the comparison is like-for-like.
 - Explicit section on **what local buys you here**: recordings may contain private
   or sensitive content of any kind; zero-egress is a feature, not just a cost saving.
+
+**Findings:** the top 5 cloud providers (OpenAI, Deepgram, AssemblyAI, Azure, Google,
+ElevenLabs) now sit within ~1–2 WER points of each other and of local Whisper on
+published benchmarks — the competitive edge has moved to streaming latency,
+diarization and domain-vocabulary biasing, not raw accuracy. Cost is negligible at
+this project's actual volume (cents for the whole test set either way). The decisive
+axis is privacy: audio containing speech is personal data under GDPR, and every cloud
+option requires a signed DPA and a residency/transfer decision that running locally
+avoids entirely. **No model swap recommended** — staying local is the right call for
+this project's threat model and scale, revisit only if real-time streaming, volume
+beyond one machine, or production-grade diarization become requirements.
 
 **Deliverable:** comparison table + a recommendation paragraph on when to reach for a
 cloud API instead.
