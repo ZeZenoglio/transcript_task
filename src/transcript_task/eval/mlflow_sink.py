@@ -91,6 +91,7 @@ def log_run(
 
     with mlflow.start_run(run_name=result.tag) as run:
         mlflow.log_params({
+            "dataset": result.dataset,
             "tier": result.tier,
             "seed": result.seed,
             "asr_model": result.asr_model,

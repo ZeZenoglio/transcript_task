@@ -120,7 +120,11 @@ and instructs the model to mark uncertain passages with `[?]` for a human review
 
 Because a small model editing text is inherently lossy, **every Word document embeds
 the unedited ASR output as an appendix**, so a reviewer can check any correction
-against what was actually heard.
+against what was actually heard. It's also not risk-free in the other direction: the
+evaluation harness's benchmarks found refine measurably raising WER on both FLEURS
+and Common Voice test data (see "Evaluation harness" below), and a production
+safety net now discards a refine attempt outright if it drifts too far from the
+raw transcript — that section covers both the quantitative evidence and the guard.
 
 ## Titles and summaries
 
@@ -223,11 +227,13 @@ src/transcript_task/
   refine.py        # LLM cleanup behind a ChatModel protocol
   summarize.py     # title/description generation, schema + slugify + filename logic
   anonymize.py     # PII safety net (NER + regex) for filenames/docx metadata
+  text_compare.py  # normalize_pt + content_recall/length_ratio — used both as
+                   # benchmark metrics (eval/) and a live refine-quality guard (pipeline.py)
   docx_writer.py   # Word document generation
   pipeline.py      # stage orchestration + CLI, transcript_id assignment
   eval/            # evaluation harness (Phase 6) — see below
 main.py            # entry point
-scripts/           # fetch_dataset.py, build_fixtures.py, benchmark.py — see below
+scripts/           # fetch_dataset.py, fetch_common_voice.py, build_fixtures.py, benchmark.py
 tests/             # pytest suite — see the Testing section below
 ```
 
@@ -310,7 +316,7 @@ uv run python scripts/benchmark.py compare baseline candidate   # exits 1 on reg
 ```
 
 **Metrics**, all pure functions in `eval/metrics.py`, independent of MLflow:
-- **WER/CER** (`jiwer`) after a Portuguese-aware normalizer (`eval/normalizer.py`)
+- **WER/CER** (`jiwer`) after a Portuguese-aware normalizer (`text_compare.py`)
   — Whisper's bundled one is English-only. It casefolds, strips punctuation, and
   expands digit runs to number words (`12` → `doze`) via `num2words`, since
   Whisper sometimes writes digits where FLEURS' ground truth spells them out —
@@ -331,7 +337,8 @@ uv run python scripts/benchmark.py compare baseline candidate   # exits 1 on reg
 
 **Tiers** (`eval/tiers.py`): `smoke` (the 4 committed fixtures), `quick`
 (duration-stratified random n=30, fixed seed — stratified so the sample isn't
-all short easy clips), `full` (the whole split).
+all short easy clips), `full` (the whole split). `--dataset {fleurs,common_voice}`
+picks which corpus to run against (see below for why there's a second one).
 
 **MLflow**: local file-backed tracking (`mlruns/`, `mlflow ui`), one run per
 benchmark. Every run also writes `benchmarks/<tag>/results.json` + `table.md`
@@ -390,6 +397,76 @@ $ echo $?
 `wer_raw` is unchanged (only the LLM was swapped, not the ASR model) while
 every refine-stage metric is flagged — the regression gate correctly points at
 which stage broke, not just that something did.
+
+### A noisier tier: Common Voice pt
+
+The FLEURS result above only says something about refine on *clean, studio-
+quality read speech* — FLEURS was always flagged as unrepresentative of this
+tool's noisy-conversational target domain (see "Benchmark dataset" above).
+`scripts/fetch_common_voice.py` fetches a second dataset,
+[Common Voice](https://commonvoice.mozilla.org/) pt (`CC0-1.0`), via
+[`fsicoli/common_voice_17_0`](https://huggingface.co/datasets/fsicoli/common_voice_17_0)
+— a community mirror, not the official `mozilla-foundation` org's repo,
+because that one ships a Python loading script and `datasets` 5.x has
+**removed loading-script support entirely** (confirmed by trying it, not
+assumed). Contributors record themselves on whatever device they have, so
+these clips carry real background noise and mic-quality variance FLEURS'
+professional narration doesn't.
+
+```bash
+uv run python scripts/fetch_common_voice.py                                  # full test split, ~305 MB, 9,467 clips
+uv run python scripts/benchmark.py run --dataset common_voice --tier quick --tag noisy-baseline
+```
+
+A second committed smoke set, `tests/fixtures_noisy/` (4 clips, 0.9s–10.6s,
+mp3/wav/m4a/opus), was built the same way as the FLEURS one — see
+`tests/fixtures_noisy/NOTICE.md` for attribution.
+
+**What real Common Voice data found, immediately, before any tuning run:**
+2 of the 4 committed smoke clips came back with `wer_raw = 1.0` — total ASR
+misses, not refine problems. A 0.9s clip of the single word "apuração" was
+transcribed as "Obrigada." (a known Whisper hallucination on very short/quiet
+audio); a 10.6s clip came back as "Me задissinou canubar." — Cyrillic
+characters mixed into Portuguese-looking fragments, reproduced identically
+from the untouched source file, so not an artifact of this project's own
+format conversion. FLEURS' clean narration never surfaced failures like this.
+
+**The actual payoff — a real `--tier quick` run (n=30, stratified, seed=42):**
+`wer_raw` mean 0.0852 (vs. FLEURS' 0.0342, confirming Common Voice is
+genuinely harder), `wer_refined` mean 0.1360. Per clip, refine **improved**
+WER on 1 of 30, **worsened** it on 7, left 22 unchanged. This is the answer
+the FLEURS-only result couldn't give: refine is net-negative on WER even on
+noisier, more varied real audio — the earlier FLEURS finding wasn't just an
+artifact of testing on unnaturally perfect speech. It still isn't the final
+word on whether refine is worth keeping (WER doesn't score punctuation or
+readability, most of refine's actual job, and neither dataset contains truly
+spontaneous disfluent speech), but it does rule out "FLEURS was just too
+clean" as the explanation.
+
+### A production safety net for refine
+
+`content_recall` and `length_ratio` (ground-truth-free, originally built as
+benchmark metrics above) are now also a **live check on every refine call**,
+not just something the eval harness measures after the fact. They live in
+`text_compare.py`, not `eval/metrics.py`, specifically so `pipeline.py` can
+use them without importing jiwer/sentence-transformers/mlflow — `eval/metrics.py`
+re-exports them so nothing else had to change.
+
+If a refine call's output fails either check, `pipeline.stage_refine`
+discards it and falls back to the raw transcript — which `summarize`/`docx`
+already do automatically for a missing `refined_transcript`. This fails
+**soft and visibly**: the rejected text is kept (not thrown away), the docx
+shows a bold warning banner naming the reason and the numbers, and the
+rejected attempt is included as an appendix so a reviewer can check the
+guard's call rather than trust it blindly.
+
+Verified against the real incident that motivated it, not just synthetic
+tests: re-running the exact clip that caused the 51-minute/163,840-token
+runaway above, through the real (now-guarded) pipeline, reproduces the slow
+generation again — a real, repeatable failure mode, not a one-off — but
+bounded this time to 521.6 seconds (the `llm_num_predict` cap) and correctly
+discarded (26,398 characters of runaway text, `content_recall=0.273`) rather
+than shipped.
 
 ## Audio handling
 

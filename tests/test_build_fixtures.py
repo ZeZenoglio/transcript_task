@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from build_fixtures import pick_diverse_clips  # noqa: E402
+from build_fixtures import pick_diverse_clips, pick_formats  # noqa: E402
 
 
 def _write_manifest(tmp_path: Path, durations: list[float]) -> Path:
@@ -58,3 +58,22 @@ class TestPickDiverseClips:
         picked = pick_diverse_clips(manifest, n=4)
         ids = [p["id"] for p in picked]
         assert len(ids) == len(set(ids))
+
+
+class TestPickFormats:
+    def test_native_format_is_first(self):
+        assert pick_formats("mp3", 4)[0] == "mp3"
+
+    def test_no_duplicate_formats(self):
+        formats = pick_formats("wav", 4)
+        assert len(formats) == len(set(formats))
+
+    def test_returns_requested_count(self):
+        assert len(pick_formats("mp3", 3)) == 3
+
+    def test_native_format_used_even_when_not_in_all_formats(self):
+        # Common Voice's mp3 is a recognised format, but this should hold
+        # even for a hypothetical native extension outside ALL_FORMATS.
+        formats = pick_formats("flac", 2)
+        assert formats[0] == "flac"
+        assert len(formats) == 2

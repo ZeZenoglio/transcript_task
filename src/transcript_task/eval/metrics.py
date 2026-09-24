@@ -12,8 +12,13 @@ from dataclasses import dataclass, field
 import jiwer
 
 from ..summarize import TranscriptSummary
+# content_recall/length_ratio live in text_compare.py, not here, so the
+# production pipeline can use them as a runtime guard (see pipeline.py's
+# stage_refine) without importing this module's jiwer/embeddings deps.
+# Re-imported here (not redefined) so existing `eval.metrics` callers and
+# tests keep working unchanged.
+from ..text_compare import content_recall, length_ratio, normalize_pt
 from .embeddings import Embedder
-from .normalizer import normalize_pt
 
 
 def word_error_rate(reference: str, hypothesis: str) -> float:
@@ -82,29 +87,6 @@ def refine_delta(ground_truth: str, raw_transcript: str, refined_transcript: str
         cer_raw=character_error_rate(ground_truth, raw_transcript),
         cer_refined=character_error_rate(ground_truth, refined_transcript),
     )
-
-
-def content_recall(raw_transcript: str, refined_transcript: str) -> float:
-    """Fraction of the raw transcript's normalized word *set* still present
-    (as a substring token) in the refined transcript. A cheap guard against
-    refine silently dropping content -- not a substitute for refine_delta,
-    which is what actually catches paraphrasing against ground truth; this
-    catches outright omission even when there's no ground truth at all
-    (i.e. in production, not just in the benchmark)."""
-    raw_words = set(normalize_pt(raw_transcript).split())
-    if not raw_words:
-        return 1.0
-    refined_words = set(normalize_pt(refined_transcript).split())
-    return len(raw_words & refined_words) / len(raw_words)
-
-
-def length_ratio(raw_transcript: str, refined_transcript: str) -> float:
-    """refined/raw character-length ratio. A guard against refine silently
-    truncating (ratio << 1) or rambling/hallucinating (ratio >> 1)."""
-    raw_len = len(raw_transcript)
-    if raw_len == 0:
-        return 1.0
-    return len(refined_transcript) / raw_len
 
 
 # ---------------------------------------------------------------------------

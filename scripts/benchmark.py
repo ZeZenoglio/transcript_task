@@ -1,16 +1,22 @@
-"""Evaluation harness CLI (Phase 6): score the pipeline against FLEURS
-ground truth, log the run, and gate CI on regressions.
+"""Evaluation harness CLI (Phase 6): score the pipeline against ground truth
+from FLEURS (clean read speech) or Common Voice (noisier, more varied real
+recordings -- see fetch_common_voice.py's docstring for why), log the run,
+and gate CI on regressions.
 
 Usage:
     # smoke tier: the 4 clips already committed under tests/fixtures/,
-    # no network, no full FLEURS download needed.
+    # no network, no full dataset download needed.
     uv run python scripts/benchmark.py run --tier smoke --tag smoke-baseline
 
     # quick tier: stratified n=30 sample of the full FLEURS split.
     # Run scripts/fetch_dataset.py first if data/fleurs_pt/ doesn't exist.
     uv run python scripts/benchmark.py run --tier quick --tag qwen9b-baseline
 
-    # full tier: the whole 919-clip split. Slow; for release checks.
+    # the same, but against the noisier Common Voice tier instead --
+    # run scripts/fetch_common_voice.py first.
+    uv run python scripts/benchmark.py run --dataset common_voice --tier quick --tag qwen9b-noisy
+
+    # full tier: the whole split. Slow; for release checks.
     uv run python scripts/benchmark.py run --tier full --tag release-1.0
 
     # Swap models via the same env vars Settings always honors:
@@ -18,7 +24,8 @@ Usage:
         --tier quick --tag qwen4b-candidate
 
     # Compare two tagged runs; exits non-zero if a metric regressed past
-    # --threshold. This exit code is what CI consumes.
+    # --threshold. This exit code is what CI consumes. Only compare runs
+    # from the same dataset -- see the module docstring's compare_runs note.
     uv run python scripts/benchmark.py compare qwen9b-baseline qwen4b-candidate
 
 Every run's results are written to benchmarks/<tag>/ (results.json, table.md,
@@ -53,10 +60,31 @@ from transcript_task.prompts import REFINE_PROMPT_TEMPLATE, get_summarize_templa
 from transcript_task.refine import OllamaChatModel
 from transcript_task.settings import PROJECT_ROOT, Settings
 
-FULL_MANIFEST = PROJECT_ROOT / "data" / "fleurs_pt" / "manifest.jsonl"
-FULL_AUDIO_ROOT = PROJECT_ROOT / "data" / "fleurs_pt"
-SMOKE_MANIFEST = PROJECT_ROOT / "tests" / "fixtures" / "manifest.jsonl"
-SMOKE_AUDIO_ROOT = PROJECT_ROOT / "tests" / "fixtures"
+# Each entry is self-contained: full split (for quick/full tiers, fetched
+# separately) and the small committed smoke set (for CI/no-download runs).
+# expected_language_variant feeds evaluate_clip's summary-conformance check
+# (see summarize.TranscriptSummary.language_variant) -- None means "don't
+# assert," for a dataset whose clips don't share one known variant.
+DATASETS = {
+    "fleurs": {
+        "full_manifest": PROJECT_ROOT / "data" / "fleurs_pt" / "manifest.jsonl",
+        "full_audio_root": PROJECT_ROOT / "data" / "fleurs_pt",
+        "smoke_manifest": PROJECT_ROOT / "tests" / "fixtures" / "manifest.jsonl",
+        "smoke_audio_root": PROJECT_ROOT / "tests" / "fixtures",
+        "expected_language_variant": "pt-BR",
+        "fetch_hint": "scripts/fetch_dataset.py",
+    },
+    "common_voice": {
+        "full_manifest": PROJECT_ROOT / "data" / "common_voice_pt" / "manifest.jsonl",
+        "full_audio_root": PROJECT_ROOT / "data" / "common_voice_pt",
+        "smoke_manifest": PROJECT_ROOT / "tests" / "fixtures_noisy" / "manifest.jsonl",
+        "smoke_audio_root": PROJECT_ROOT / "tests" / "fixtures_noisy",
+        # Common Voice pt mixes pt-BR/pt-PT/unlabeled contributors -- no
+        # single expected variant to assert per clip.
+        "expected_language_variant": None,
+        "fetch_hint": "scripts/fetch_common_voice.py",
+    },
+}
 
 
 def _load_manifest(path: Path) -> list[dict]:
@@ -71,18 +99,20 @@ def _log(msg: str) -> None:
 
 def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
     settings = Settings()
+    dataset_cfg = DATASETS[args.dataset]
 
-    full_manifest = _load_manifest(FULL_MANIFEST)
-    smoke_manifest = _load_manifest(SMOKE_MANIFEST)
+    full_manifest = _load_manifest(dataset_cfg["full_manifest"])
+    smoke_manifest = _load_manifest(dataset_cfg["smoke_manifest"])
     if args.tier != "smoke" and not full_manifest:
         sys.exit(
-            f"{FULL_MANIFEST} not found. Run scripts/fetch_dataset.py first, "
+            f"{dataset_cfg['full_manifest']} not found. Run {dataset_cfg['fetch_hint']} first, "
             f"or use --tier smoke to run against the committed fixtures."
         )
 
     clips = select_tier(full_manifest, smoke_manifest, args.tier, n=args.n, seed=args.seed)
-    audio_root = SMOKE_AUDIO_ROOT if args.tier == "smoke" else FULL_AUDIO_ROOT
-    _log(f"tier={args.tier} n={len(clips)} asr_model={settings.asr_model} llm_model={settings.llm_model}")
+    audio_root = dataset_cfg["smoke_audio_root"] if args.tier == "smoke" else dataset_cfg["full_audio_root"]
+    _log(f"dataset={args.dataset} tier={args.tier} n={len(clips)} "
+         f"asr_model={settings.asr_model} llm_model={settings.llm_model}")
 
     transcriber = MlxWhisperTranscriber(settings.asr_model)
     chat_model = OllamaChatModel(settings.llm_model)
@@ -95,6 +125,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
             started = time.time()
             result = evaluate_clip(
                 clip, audio_root, settings, transcriber, chat_model, embedder, tmp_dir,
+                expected_language_variant=dataset_cfg["expected_language_variant"],
                 skip_refine=args.skip_refine,
             )
             clip_results.append(result)
@@ -120,6 +151,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
         refine_prompt_id=REFINE_PROMPT_TEMPLATE.id,
         summarize_prompt_id=get_summarize_template(settings.summary_language).id,
         summary_language=settings.summary_language,
+        dataset=args.dataset,
         clips=clip_results,
         settings_snapshot={
             "llm_temperature": settings.llm_temperature,
@@ -155,6 +187,12 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
 def run_compare(args: argparse.Namespace) -> int:
     baseline = load_local_result(Path(DEFAULT_ARTIFACTS_DIR), args.baseline_tag)
     candidate = load_local_result(Path(DEFAULT_ARTIFACTS_DIR), args.candidate_tag)
+    if baseline.dataset != candidate.dataset:
+        sys.exit(
+            f"Refusing to compare runs from different datasets "
+            f"({baseline.dataset!r} vs {candidate.dataset!r}) -- their WER/CER/SemDist "
+            f"numbers aren't on the same scale (see the noisy-tier numbers in the README)."
+        )
     comparison = compare_runs(baseline, candidate, threshold=args.threshold)
 
     print(comparison.markdown_table())
@@ -174,6 +212,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="command", required=True)
 
     run_ap = sub.add_parser("run", help="run a benchmark and log the results")
+    run_ap.add_argument("--dataset", choices=list(DATASETS), default="fleurs")
     run_ap.add_argument("--tier", choices=["smoke", "quick", "full"], default="quick")
     run_ap.add_argument("--tag", required=True, help="a name for this run, e.g. qwen9b-baseline")
     run_ap.add_argument("--n", type=int, default=DEFAULT_QUICK_N, help="quick tier sample size")

@@ -86,6 +86,24 @@ class Settings(BaseSettings):
             "num_predict": self.llm_num_predict,
         }
 
+    # --- refine quality guard --------------------------------------------
+    # A ground-truth-free sanity check on the refine stage's own output
+    # (see text_compare.py), run right after every refine call, not just in
+    # the eval harness. If refine's output fails either check, it's
+    # discarded and the raw transcript is used instead -- see
+    # pipeline.stage_refine. Thresholds are deliberately generous rather
+    # than tight: real disfluent speech can legitimately shrink a lot when
+    # refine correctly strips hesitations/repetitions (see prompts.py's
+    # refine instructions), and the goal here is only to catch catastrophic
+    # failures (truncation, runaway repetition), not flag normal cleanup.
+    # Not yet calibrated against real disfluent conversational audio (the
+    # FLEURS/Common Voice benchmarks are both prompted sentence-reading, not
+    # spontaneous speech) -- treat these as a reasonable starting point, not
+    # a tuned constant.
+    refine_min_content_recall: float = 0.5
+    refine_min_length_ratio: float = 0.3
+    refine_max_length_ratio: float = 2.5
+
     # --- summarization -------------------------------------------------
     # Language of the generated title/description/topics. The transcript
     # itself is never translated -- this only picks which prompt variant

@@ -164,3 +164,66 @@ class TestWriteDocxWithoutSummary:
         assert out.exists()
         doc = Document(str(out))
         assert doc.core_properties.title == "Transcrição — recording.m4a"
+
+
+class TestRefineRejected:
+    """Phase 6 follow-up: the refine-quality guard (pipeline.stage_refine)
+    can discard a bad refine attempt and fall back to the raw transcript --
+    this must be visible in the document, not a silent substitution."""
+
+    def _item_with_rejection(self, **overrides) -> dict:
+        item = _base_item(
+            refine_rejected={
+                "reason": "length_ratio out of bounds",
+                "content_recall": 0.12,
+                "length_ratio": 6.5,
+                "text": "texto revisto descartado, muito mais longo que o original",
+            },
+        )
+        item.pop("refined_transcript")
+        item.update(overrides)
+        return item
+
+    def test_shows_the_raw_transcript_as_the_body(self, tmp_path):
+        item = self._item_with_rejection()
+        out = tmp_path / "out.docx"
+        write_docx("recording.m4a", item, out, Settings())
+        text = "\n".join(p.text for p in Document(str(out)).paragraphs)
+        assert item["raw_transcript"] in text
+        assert "Transcrição (bruta)" in text
+
+    def test_shows_a_visible_warning_with_the_reason_and_metrics(self, tmp_path):
+        item = self._item_with_rejection()
+        out = tmp_path / "out.docx"
+        write_docx("recording.m4a", item, out, Settings())
+        text = "\n".join(p.text for p in Document(str(out)).paragraphs)
+        assert "⚠" in text
+        assert "0.12" in text
+        assert "6.5" in text
+
+    def test_rejected_attempt_is_kept_visible_in_an_appendix(self, tmp_path):
+        item = self._item_with_rejection()
+        out = tmp_path / "out.docx"
+        write_docx("recording.m4a", item, out, Settings())
+        text = "\n".join(p.text for p in Document(str(out)).paragraphs)
+        assert item["refine_rejected"]["text"] in text
+
+    def test_provenance_block_distinguishes_rejected_from_never_attempted(self, tmp_path):
+        rejected_item = self._item_with_rejection()
+        never_attempted_item = _base_item()
+        never_attempted_item.pop("refined_transcript")
+        out1, out2 = tmp_path / "rejected.docx", tmp_path / "never.docx"
+        write_docx("a.m4a", rejected_item, out1, Settings())
+        write_docx("a.m4a", never_attempted_item, out2, Settings())
+        rejected_text = "\n".join(p.text for p in Document(str(out1)).paragraphs)
+        never_text = "\n".join(p.text for p in Document(str(out2)).paragraphs)
+        assert "descartado" in rejected_text
+        assert "descartado" not in never_text
+
+    def test_no_warning_or_appendix_when_refine_succeeded(self, tmp_path):
+        item = _base_item()  # has a normal refined_transcript, no rejection
+        out = tmp_path / "out.docx"
+        write_docx("recording.m4a", item, out, Settings())
+        text = "\n".join(p.text for p in Document(str(out)).paragraphs)
+        assert "descartad" not in text
+        assert "⚠" not in text

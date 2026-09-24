@@ -70,6 +70,7 @@ class BenchmarkResult:
     refine_prompt_id: str
     summarize_prompt_id: str
     summary_language: str
+    dataset: str = "fleurs"
     clips: list[ClipResult] = field(default_factory=list)
     generated_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -170,6 +171,7 @@ class BenchmarkResult:
             "refine_prompt_id": self.refine_prompt_id,
             "summarize_prompt_id": self.summarize_prompt_id,
             "summary_language": self.summary_language,
+            "dataset": self.dataset,
             "generated_at": self.generated_at,
             "settings_snapshot": self.settings_snapshot,
             "peak_rss_mb": self.peak_rss_mb,
@@ -189,6 +191,7 @@ class BenchmarkResult:
             refine_prompt_id=data.get("refine_prompt_id", ""),
             summarize_prompt_id=data.get("summarize_prompt_id", ""),
             summary_language=data.get("summary_language", "pt"),
+            dataset=data.get("dataset", "fleurs"),
             clips=clips,
             generated_at=data.get("generated_at", ""),
             settings_snapshot=data.get("settings_snapshot", {}),
@@ -200,7 +203,7 @@ class BenchmarkResult:
 
     def markdown_table(self) -> str:
         lines = [
-            f"# Benchmark: {self.tag} ({self.tier}, n={self.n_clips}, seed={self.seed})",
+            f"# Benchmark: {self.tag} ({self.dataset}/{self.tier}, n={self.n_clips}, seed={self.seed})",
             "",
             f"- ASR model: `{self.asr_model}`",
             f"- LLM model: `{self.llm_model}`",

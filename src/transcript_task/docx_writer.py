@@ -20,6 +20,10 @@ _LABELS = {
         "sensitivity_medium": "⚠ Este documento pode conter informação privada. "
                                "Reveja antes de partilhar.",
         "low_confidence": "Resumo automático de baixa confiança — reveja o título e a descrição.",
+        "refine_rejected": "⚠ A revisão automática foi descartada por falhar uma verificação de "
+                            "qualidade interna ({reason}: sobreposição de conteúdo {content_recall}, "
+                            "razão de comprimento {length_ratio}) — o texto abaixo é a transcrição "
+                            "bruta, sem correções.",
     },
     "en": {
         "topics": "Topics: ",
@@ -28,6 +32,9 @@ _LABELS = {
         "sensitivity_medium": "⚠ This document may contain private information. "
                                "Review before sharing.",
         "low_confidence": "Low-confidence automatic summary — please review the title and description.",
+        "refine_rejected": "⚠ Automatic cleanup was discarded for failing an internal quality "
+                            "check ({reason}: content overlap {content_recall}, length ratio "
+                            "{length_ratio}) — the text below is the raw, uncorrected transcript.",
     },
 }
 
@@ -149,8 +156,13 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
     meta.add_run("\nModelo de transcrição: ").bold = True
     meta.add_run(settings.asr_model)
     meta.add_run("\nModelo de revisão: ").bold = True
-    meta.add_run(settings.llm_model if item.get("refined_transcript")
-                 else "— (texto bruto, sem revisão)")
+    if item.get("refined_transcript"):
+        reviewer_line = settings.llm_model
+    elif item.get("refine_rejected"):
+        reviewer_line = f"{settings.llm_model} (descartado por verificação de qualidade)"
+    else:
+        reviewer_line = "— (texto bruto, sem revisão)"
+    meta.add_run(reviewer_line)
     if summary:
         meta.add_run("\nFalantes estimados: ").bold = True
         meta.add_run(str(summary["speakers_detected"]) if summary["speakers_detected"] else "desconhecido")
@@ -171,6 +183,15 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
     note_run.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
 
     doc.add_paragraph()
+
+    rejection = item.get("refine_rejected")
+    if rejection:
+        banner = doc.add_paragraph()
+        banner_run = banner.add_run(labels["refine_rejected"].format(**rejection))
+        banner_run.bold = True
+        banner_run.font.color.rgb = RGBColor(0xB0, 0x70, 0x00)
+        doc.add_paragraph()
+
     doc.add_heading("Transcrição revista" if item.get("refined_transcript")
                     else "Transcrição (bruta)", level=1)
 
@@ -185,6 +206,18 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
         doc.add_page_break()
         doc.add_heading("Anexo — transcrição automática original", level=1)
         anexo = doc.add_paragraph(item["raw_transcript"])
+        anexo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        for run in anexo.runs:
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+
+    # A rejected refine attempt is kept visible too (not just logged), so a
+    # reviewer can see what the model actually produced and judge for
+    # themselves whether the quality guard's call was right.
+    elif rejection:
+        doc.add_page_break()
+        doc.add_heading("Anexo — tentativa de revisão descartada", level=1)
+        anexo = doc.add_paragraph(rejection["text"])
         anexo.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         for run in anexo.runs:
             run.font.size = Pt(9)

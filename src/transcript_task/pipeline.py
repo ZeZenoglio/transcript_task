@@ -42,6 +42,7 @@ from .docx_writer import human_duration, write_docx
 from .prompts import REFINE_PROMPT_TEMPLATE
 from .refine import ChatModel, OllamaChatModel, refine_transcript
 from .settings import PROJECT_ROOT, Settings
+from .text_compare import content_recall, length_ratio
 from .summarize import TranscriptSummary, docx_filename, summarize_transcript
 
 STAGES = ("extract", "normalize", "transcribe", "refine", "summarize", "docx")
@@ -270,6 +271,21 @@ def stage_transcribe(state: dict, settings: Settings, force: bool, transcriber: 
 # stage 4 - refine
 # ---------------------------------------------------------------------------
 
+def refine_rejection_reason(raw: str, refined: str, settings: Settings) -> dict | None:
+    """Ground-truth-free sanity check on refine's own output (see
+    text_compare.py). Returns None if it passes, or a dict describing why it
+    didn't -- content_recall/length_ratio are always included so the reason
+    is auditable, not just a boolean. See Settings.refine_min_content_recall
+    and friends for the (deliberately generous) thresholds and why."""
+    recall = round(content_recall(raw, refined), 3)
+    ratio = round(length_ratio(raw, refined), 3)
+    if recall < settings.refine_min_content_recall:
+        return {"reason": "content_recall too low", "content_recall": recall, "length_ratio": ratio}
+    if not (settings.refine_min_length_ratio <= ratio <= settings.refine_max_length_ratio):
+        return {"reason": "length_ratio out of bounds", "content_recall": recall, "length_ratio": ratio}
+    return None
+
+
 def stage_refine(state: dict, settings: Settings, force: bool, model: ChatModel | None = None) -> None:
     model = model or OllamaChatModel(settings.llm_model)
 
@@ -293,10 +309,25 @@ def stage_refine(state: dict, settings: Settings, force: bool, model: ChatModel 
             item["refine_error"] = str(exc)
             continue
 
-        item["refined_transcript"] = text
         item["refine_seconds"] = round(time.time() - started, 2)
         item.pop("refine_error", None)
-        log("refine", f"{key}: {len(text)} chars in {item['refine_seconds']:.1f}s")
+
+        rejection = refine_rejection_reason(item["raw_transcript"], text, settings)
+        if rejection is not None:
+            # Falls back to the raw transcript everywhere downstream --
+            # summarize/docx already treat a missing refined_transcript that
+            # way (see stage_summarize and write_docx). The rejected text
+            # itself is kept, not discarded, so a reviewer can see what was
+            # generated and why it was rejected, not just that it was.
+            item["refine_rejected"] = {**rejection, "text": text}
+            item.pop("refined_transcript", None)
+            log("refine", f"{key}: REJECTED ({rejection['reason']}: "
+                          f"content_recall={rejection['content_recall']}, "
+                          f"length_ratio={rejection['length_ratio']}) -- using raw transcript")
+        else:
+            item["refined_transcript"] = text
+            item.pop("refine_rejected", None)
+            log("refine", f"{key}: {len(text)} chars in {item['refine_seconds']:.1f}s")
         save_state(state, settings)
 
 

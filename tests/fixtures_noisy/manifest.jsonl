@@ -1,0 +1,4 @@
+{"ground_truth": "apuração", "duration": 0.9, "split": "test", "accents": null, "variant": null, "audio_path": "audio/common_voice_pt_36887122.mp3", "source": "fsicoli/common_voice_17_0 (CC0-1.0)"}
+{"ground_truth": "Mãe d'Água", "duration": 3.82, "split": "test", "accents": null, "variant": null, "audio_path": "audio/common_voice_pt_31321001.wav", "source": "fsicoli/common_voice_17_0 (CC0-1.0)"}
+{"ground_truth": "Uma pessoa que não se atreve a desistir, o coração pisca lentamente.", "duration": 5.26, "split": "test", "accents": null, "variant": null, "audio_path": "audio/common_voice_pt_28502904.m4a", "source": "fsicoli/common_voice_17_0 (CC0-1.0)"}
+{"ground_truth": "Mesa de sinuca no bar", "duration": 10.62, "split": "test", "accents": null, "variant": null, "audio_path": "audio/common_voice_pt_27025024.opus", "source": "fsicoli/common_voice_17_0 (CC0-1.0)"}

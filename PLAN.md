@@ -20,9 +20,10 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
-| Tests | 175 unit tests (`uv run pytest`) + 2 integration tests against real Ollama/mlx-whisper |
-| Benchmark data | FLEURS pt_br test split (919 clips) fetchable via `scripts/fetch_dataset.py`; 4-clip diversified fixture committed under `tests/fixtures/` |
-| Eval harness | `scripts/benchmark.py run/compare` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
+| Tests | 197 unit tests (`uv run pytest`) + 2 integration tests against real Ollama/mlx-whisper |
+| Benchmark data | FLEURS pt_br (919 clips, `scripts/fetch_dataset.py`) + Common Voice pt (9,467 clips, `scripts/fetch_common_voice.py`); diversified fixtures committed under `tests/fixtures/` and `tests/fixtures_noisy/` |
+| Eval harness | `scripts/benchmark.py run/compare --dataset {fleurs,common_voice}` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
+| Refine safety net | production runtime guard (`text_compare.py` + `pipeline.stage_refine`) discards a refine call that drifts too far from the raw transcript, visibly, falling back to raw |
 | Missing | linting, API, CI, frontend, logging, persistence |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
@@ -673,6 +674,122 @@ swapped, not the ASR model) while every refine-stage metric is flagged — the
 comparator distinguishing which stage actually regressed, not just "something
 got worse," is exactly the point.
 
+### Second follow-up (2026-09-24): a noisier tier, and a production refine-quality guard
+
+Prompted by discussion after the above: the FLEURS finding (refine raises WER)
+only says something about refine on *clean, studio-quality read speech* — the
+plan's own risk table always flagged FLEURS as unrepresentative of this tool's
+actual noisy-conversational target domain. Two follow-ups, both built and run
+against real data rather than left as a hypothesis:
+
+**1. A second, noisier benchmark dataset: Common Voice pt.**
+- `mozilla-foundation/common_voice_17_0` (the official HF org's repo) turned
+  out to be a dead end, not just an auth hassle as the risk table guessed:
+  it ships a Python loading script, and `datasets` 5.x has **removed loading-
+  script support entirely** (`trust_remote_code "is not supported anymore"`,
+  confirmed by actually trying it). `fsicoli/common_voice_17_0` is a
+  well-maintained community mirror of the same release, republished as plain
+  per-language `.tar` audio shards + `.tsv` transcripts, still `CC0-1.0`
+  (verified from the repo's own README, not assumed). `scripts/fetch_common_voice.py`
+  fetches it directly via `huggingface_hub` (no `datasets.load_dataset`
+  needed at all here, so the torchcodec concern doesn't even arise).
+- 9,467 clips fetched, 0.9s–10.6s each, verified unique with no duration
+  mismatches (the FLEURS lessons — never trust a metadata field, always
+  measure with `probe()`, key by position not a dataset id — were applied
+  from the start this time, and no equivalent bugs turned up).
+- `scripts/build_fixtures.py` generalised (`--source-dir`/`--dest-dir`/
+  `--source-ext`) to build a second committed smoke set, `tests/fixtures_noisy/`
+  (4 clips, mp3/wav/m4a/opus, 0.9s–10.6s), from real Common Voice data. It
+  needed one real generalization, not a rewrite: the "native format" to copy
+  unchanged is now a parameter instead of hardcoded `wav`.
+- `eval/tiers.py`/`eval/runner.py` needed **zero changes** — the manifest
+  schema (`audio_path`/`ground_truth`/`duration`) was already dataset-agnostic
+  by construction. `scripts/benchmark.py` gained a `--dataset {fleurs,common_voice}`
+  flag and a small registry of per-dataset paths; `BenchmarkResult` gained a
+  `dataset` field so a run always self-documents which corpus it's from, and
+  `compare` refuses to diff runs from different datasets (their WER numbers
+  aren't on the same scale).
+- **A real finding from the committed smoke fixtures, before any tuning run:**
+  2 of the 4 real Common Voice clips came back with `wer_raw = 1.0` — total
+  ASR misses, not refine problems. One (a 0.9s clip of the single word
+  "apuração") was transcribed as "Obrigada." — a well-known Whisper
+  hallucination pattern on very short/quiet audio. The other (a 10.6s clip)
+  came back as "Me задissinou canubar." — **Cyrillic characters mixed into
+  Portuguese-looking fragments**, reproduced identically from the original
+  source mp3 (not an artifact of this project's own format conversion,
+  verified by transcribing the untouched source file directly). Real
+  background noise and recording-device variance breaks even large-v3-turbo
+  in ways FLEURS' clean narration never surfaced — exactly why this tier
+  exists.
+- **The actual payoff, run for real at `--tier quick` (n=30, stratified,
+  seed=42):** `wer_raw` mean 0.0852 (vs. FLEURS' 0.0342 — confirms Common
+  Voice really is harder), `wer_refined` mean 0.1360. Per-clip: refine
+  **improved** WER on 1 of 30 clips, **worsened** it on 7, left 22 unchanged.
+  This directly answers the question the FLEURS-only result couldn't: refine
+  is net-negative on WER even on noisier, more varied real audio, not just
+  on unnaturally clean read speech. That doesn't settle whether refine helps
+  overall (it isn't scored for punctuation/readability, which is most of its
+  actual job, and neither FLEURS nor Common Voice contains genuinely
+  spontaneous disfluent speech, the domain refine's prompt actually targets)
+  — but it does mean the earlier FLEURS result wasn't just an artifact of
+  testing on abnormally perfect audio.
+
+**2. A production runtime guard on refine, using the eval harness's own metrics.**
+`content_recall` and `length_ratio` (ground-truth-free, already built for
+Phase 6's benchmark) are now also a **live check on every refine call**, not
+just a benchmark metric:
+- Moved out of `eval/metrics.py` into a new `text_compare.py` (alongside
+  `normalize_pt`), specifically so the production pipeline can import them
+  without pulling in `eval/`'s jiwer/sentence-transformers/mlflow
+  dependencies — a real layering fix, verified by a test
+  (`test_text_compare.py`) that checks the module imports cleanly with
+  `transcript_task.eval` untouched.
+- `pipeline.stage_refine` now calls `refine_rejection_reason()` right after
+  every refine call. If content_recall or length_ratio fails its (generous,
+  documented-as-uncalibrated) threshold, the refined output is **discarded**
+  — `refined_transcript` is left unset, which every downstream stage
+  (summarize, docx) already falls back to the raw transcript for, with zero
+  changes needed there.
+- This fails **soft and visibly**, not silently: the rejected text is kept
+  (`item["refine_rejected"]`, including the metrics that triggered it), the
+  docx shows a bold warning banner naming the reason and the numbers, the
+  provenance line distinguishes "revision never attempted" from "revision
+  attempted and discarded" (previously both looked identical), and the
+  rejected attempt itself is kept visible in an appendix so a reviewer can
+  judge the guard's call rather than just trust it blindly.
+- **Verified against the real incident, not just synthetic unit tests:**
+  re-running the exact clip that caused Phase 6's original 51-minute/163,840-
+  token runaway (`llama3.2:1b` on the "Correntes de retorno..." sentence)
+  through the real, now-guarded pipeline reproduces the slow generation
+  again — confirming it's a real, repeatable model+prompt failure mode, not
+  a one-off fluke — but this time bounded by both fixes together, measured:
+  521.6 seconds (~8.7 min) instead of 3041s (~51 min) -- the `llm_num_predict=8192`
+  cap doesn't scale down generation time linearly with the token cap (real
+  generation still ran long relative to a normal ~2s call), but it is a real,
+  substantial bound, not a cosmetic one. The output was still 26,398
+  characters of runaway text (length_ratio 221.8, content_recall 0.273
+  against the ~120-character raw transcript); the new guard caught it on
+  `content_recall too low` and correctly discarded it, falling back to the
+  raw transcript. This is the honest result of the actual re-run, not a
+  rounded-off estimate.
+- 12 new unit tests (`test_pipeline_refine_guard.py`) cover: normal cleanup
+  passing, legitimate heavy hesitation-removal shrinkage passing (the guard
+  must not punish refine for doing its actual job), runaway generation and
+  near-total content loss both correctly rejected, thresholds overridable
+  via `Settings`, and `--force` correctly clearing a stale result in either
+  direction (accepted → rejected on a worse model, rejected → accepted on a
+  better one). 6 new tests (`test_docx_writer.py::TestRefineRejected`) cover
+  the document rendering.
+
+**Open question, deliberately not resolved here:** whether refine's prompt
+should be made more conservative (less prone to rewording already-correct
+text) is a prompt-engineering decision, not an infrastructure one — this
+follow-up built the tools to measure it (the noisy tier) and the safety net
+against its worst failure mode (the runtime guard), but didn't tune the
+prompt itself. That's future work once genuinely spontaneous/disfluent
+Portuguese audio (neither FLEURS nor Common Voice qualifies) is available to
+calibrate against.
+
 ---
 
 ## Phase 7 — FastAPI service, persistence, logging
@@ -862,3 +979,5 @@ is a hard gate requiring your confirmation.
 | 9 | **Original filename stem dropped from the new `.docx` name**, built in Phase 3b with no objection raised. Traceable via the docx's provenance header and the `transcripts.json` record instead. Reversible at low cost (`<id>_<slug>__<stem>.docx`) if quick folder browsing turns out to matter more. |
 | 10 | **MLflow file-store opt-out kept, DB backend not adopted.** MLflow 3.x refuses `file:./mlruns` unless `MLFLOW_ALLOW_FILE_STORE` is set (see Phase 6). Set programmatically in `eval/mlflow_sink.py` rather than migrating to SQLite, since decision #5's reasoning (single-user local tool, no server) still holds — the DB backend solves a multi-writer problem this project doesn't have. |
 | 11 | **Regression threshold: 0.02 absolute** (2 percentage points of WER/CER/SemDist), built in Phase 6 with no objection raised. Configurable via `compare --threshold`; a metric missing from either compared run is skipped rather than flagged, so comparing runs of different tiers never fails spuriously. |
+| 12 | **Second benchmark dataset: Common Voice pt via `fsicoli/common_voice_17_0`** (CC0-1.0 community mirror), not the official `mozilla-foundation` org's repo — that one requires a loading script `datasets` 5.x can no longer run at all. Requested by the user explicitly to test whether refine's WER-erosion finding was an artifact of FLEURS' unusually clean audio (it wasn't — see Phase 6's second follow-up). |
+| 13 | **Refine quality guard: fail soft and visible, not silent, and not a hard abort.** A rejected refine attempt falls back to the raw transcript (reusing summarize/docx's existing fallback for a missing `refined_transcript`) but is never thrown away — kept in state, shown in the docx as a labeled appendix with the specific numbers that triggered rejection, so a reviewer can judge the guard's call. Thresholds (`refine_min_content_recall=0.5`, `refine_min/max_length_ratio=0.3/2.5`) are deliberately generous and explicitly documented as uncalibrated (no genuinely spontaneous-disfluent-speech dataset exists yet to calibrate against) — built to catch catastrophic failures (truncation, runaway generation), not to flag normal hesitation-removal shrinkage. |

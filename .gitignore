@@ -89,3 +89,15 @@ benchmarks/
 !tests/fixtures/**/*.json
 !tests/fixtures/**/*.jsonl
 !tests/fixtures/**/*.md
+
+# A small, diversified subset of Common Voice pt (Phase 6, "noisier" tier) --
+# CC0-1.0, contributors' recordings voluntarily donated to the public
+# Mozilla Common Voice corpus specifically for reuse like this.
+!tests/fixtures_noisy/
+!tests/fixtures_noisy/**/*.wav
+!tests/fixtures_noisy/**/*.m4a
+!tests/fixtures_noisy/**/*.opus
+!tests/fixtures_noisy/**/*.mp3
+!tests/fixtures_noisy/**/*.json
+!tests/fixtures_noisy/**/*.jsonl
+!tests/fixtures_noisy/**/*.md
