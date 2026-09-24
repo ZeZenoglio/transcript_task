@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–4 complete (2026-09-24, on `dev`). Phases 5-12 pending. All open
+**Status:** Phases 0–5 complete (2026-09-24, on `dev`). Phases 6-12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -17,9 +17,9 @@ README and this plan were swept for scenario-specific framing and examples.
 
 | | |
 |---|---|
-| Works | `extract → normalize → transcribe → refine → summarize → docx`, 9 real recordings, JSON checkpointing, stable `transcript_id` per recording |
+| Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
-| Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base |
+| Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
 | Tests | 80 unit tests (`uv run pytest`) + 1 integration test against real Ollama |
 | Benchmark data | FLEURS pt_br test split (919 clips) fetchable via `scripts/fetch_dataset.py`; 4-clip diversified fixture committed under `tests/fixtures/` |
 | Missing | linting, API, eval harness, CI, frontend, logging, persistence |
@@ -428,21 +428,28 @@ against ground truth, not just "doesn't crash"). 80 unit tests green.
 
 ---
 
-## Phase 5 — Retire the private test data ✅ approved
+## Phase 5 — Retire the private test data ✅ done
 
 Approved 2026-09-24 (decision #1): the source recordings are backed up externally
 and are to be removed from this machine; the repo generalises to a plain
-speech-to-text utility with no tie to any particular recording set. Only run this
-once Phase 4 is green and the eval harness (Phase 6) can actually run on the public
+speech-to-text utility with no tie to any particular recording set. Run once Phase 4
+was green and the pipeline had already been validated end-to-end on public FLEURS
 data instead.
 
-- Delete `Arquivo.zip`, `tmp/`, `output/`.
-- Irreversible on this machine — proceed only because the backup exists.
-- Verify nothing in git history ever contained them (it won't, if Phase 0 came first —
-  which is the main reason Phase 0 comes first).
+- Deleted `Arquivo.zip`, `tmp/`, `output/` from the local machine.
+- Verified first, before deleting anything, that none of `Arquivo.zip`, `tmp/`,
+  `output/`, or `data/` ever appeared in git history:
+  `git log --all --full-history -- Arquivo.zip tmp/ output/ data/` returned nothing.
+  Phase 0's `.gitignore` (written before the first commit) did its job — there was
+  no history to scrub, just local files to remove.
+- `data/fleurs_pt/` (the public FLEURS download used by `scripts/fetch_dataset.py`
+  and `scripts/build_fixtures.py`) was kept — it's gitignored only because it's
+  large derived data, not because it's private.
+- Irreversible on this machine — done only because the external backup exists.
 
-**Exit:** repo contains no personal audio or transcripts; pipeline still runs
-end-to-end on FLEURS data.
+**Exit:** repo and working tree contain no personal audio or transcripts; the
+pipeline was already confirmed (Phase 4) to run end-to-end on FLEURS data, so no
+further functional verification was needed here.
 
 ---
 
