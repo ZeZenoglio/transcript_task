@@ -6,8 +6,17 @@ secondaryBackgroundColor = "#F2F4F7"
 textColor = "#1A1A1A"
 font = "sans serif"
 
+# Kept in sync with Settings.api_max_upload_mb's default (settings.py) --
+# Streamlit's file_uploader shows *this* value in its own UI regardless of
+# what the API actually enforces, so a mismatch here silently makes part of
+# the API's real limit unreachable from the frontend (a real bug found in
+# a visual QA pass: the uploader showed Streamlit's 200MB default while the
+# API's actual limit was 500MB). If TRANSCRIPT_API_MAX_UPLOAD_MB is ever
+# overridden via env var, update this to match -- it can't be read from the
+# API at Streamlit-server-startup time, only from within a running session.
 [server]
 headless = true
+maxUploadSize = 500
 
 [browser]
 gatherUsageStats = false

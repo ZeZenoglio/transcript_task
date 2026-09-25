@@ -315,6 +315,15 @@ tests (renders without raising, the Transcribe button is disabled with no file
 selected, the sidebar degrades instead of crashing on an unreachable host or an
 unexpected response shape).
 
+**A real visual QA pass** (a Chromium browser actually clicking through both
+`/docs` and this app, screenshots included) is at
+[docs/visual-qa-report/](docs/visual-qa-report/visual_qa_report.md). It found
+two genuine OpenAPI-docs bugs (fixed — see PLAN.md's Phase 9 QA follow-up) and
+one more caught independently while verifying its claims (a Streamlit/API
+upload-size mismatch, also fixed), plus a set of researched, concrete
+recommendations for visual polish that are deliberately left as a backlog
+item rather than acted on unprompted.
+
 ## Project layout
 
 ```

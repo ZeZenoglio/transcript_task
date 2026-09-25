@@ -20,7 +20,7 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
-| Tests | 284 unit tests (`uv run pytest`) + 3 integration tests against real Ollama/mlx-whisper |
+| Tests | 290 unit tests (`uv run pytest`) + 3 integration tests against real Ollama/mlx-whisper |
 | Benchmark data | FLEURS pt_br (919 clips, `scripts/fetch_dataset.py`) + Common Voice pt (9,467 clips, `scripts/fetch_common_voice.py`); diversified fixtures committed under `tests/fixtures/` and `tests/fixtures_noisy/` |
 | Eval harness | `scripts/benchmark.py run/compare --dataset {fleurs,common_voice}` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
 | Refine safety net | production runtime guard (`text_compare.py` + `pipeline.stage_refine`) discards a refine call that drifts too far from the raw transcript, visibly, falling back to raw |
@@ -1184,6 +1184,85 @@ correct model names, and the audio-extension list all come through the real
 `/health`/`/v1/config` calls, not fakes; separately ran `streamlit run
 frontend/app.py` as an actual server process and confirmed it serves `200`.
 284 unit tests total project-wide.
+
+### Post-Phase-9 visual QA pass (2026-09-25, on `dev`)
+
+Requested explicitly: a real Chromium-driven visual walkthrough of both `/docs`
+and the Streamlit app (no interactive Chrome tool was connected in the
+implementing session, so this ran in a separate session with Playwright,
+report and screenshots committed to `docs/visual-qa-report/`). Every finding
+was re-verified directly against the real running services and the actual
+generated `/openapi.json` before fixing anything, not taken on faith.
+
+**Two real, reproducible OpenAPI-docs bugs, both confirmed and fixed:**
+1. **Every error response showed the same wrong example, regardless of
+   status code.** The shared `Problem` schema carried one hardcoded example;
+   Swagger applied it to every response referencing that schema, so `POST
+   /v1/jobs`'s `400`/`413` responses displayed the `404` "no such job"
+   example. Root cause, found by reading FastAPI's own OpenAPI generator
+   (`fastapi/openapi/utils.py`): passing `"model": Problem` in a route's
+   `responses={}` dict always additionally injects an `application/json`
+   entry built from that model's schema — *in addition to* any explicit
+   `content` override in the same dict — with no supported per-route way to
+   suppress it. Fixed by post-processing the generated schema once
+   (`custom_openapi()`), stripping the spurious `application/json` entry
+   from any response that also declares `application/problem+json` (the
+   only content type the server ever actually sends for a `Problem` body),
+   and giving every error response its own accurate example via a new
+   `problem_response()` helper instead of relying on the schema-level
+   default. Fixes the report's secondary "declared media type says
+   `application/json`, runtime sends `application/problem+json`" note too,
+   for free, since it's the same root cause.
+2. **The docx-download endpoint's docs claimed it returns JSON.**
+   `GET /v1/jobs/{job_id}/docx`'s `200` response had a stray empty
+   `application/json` entry that Swagger's media-type dropdown defaulted to,
+   showing a fabricated `"string"` example for an endpoint that always
+   actually streamed a real `.docx` file. Root cause (again found by reading
+   the generator, not guessed): FastAPI derives the automatic content-type
+   injection from the *route's response class*'s `media_type` attribute,
+   not from `response_model` — `response_model=None` alone does not fix
+   this. `FileResponse.media_type` is `None` by default, which is what
+   actually suppresses the injection once `response_class=FileResponse` is
+   set explicitly on the route.
+3. **Minor:** the `benchmark` tag's description, and that endpoint's own
+   description, told the reader to "see PLAN.md's Phase 6" — a repo file
+   with no meaning to someone reading `/docs` in a browser with no repo
+   access. Reworded to be self-contained.
+
+**A fourth issue, found independently while checking the report's own
+claims, not by the report itself:** the report noted the Streamlit upload
+widget's displayed "200MB per file" limit "matches the
+`api_max_upload_mb`/`audio_extensions` values seen in `/v1/config`" — it
+doesn't. `Settings.api_max_upload_mb` defaults to 500; the 200 shown in the
+UI is Streamlit's own unrelated `server.maxUploadSize` default, never
+configured. The extensions list genuinely does come from the API (confirmed
+correct); the size limit was a coincidence of two unrelated numbers, one of
+which happened to be checked and the other not. Before this fix, a file
+between 200MB and 500MB would be rejected by Streamlit client-side even
+though the API was willing to accept it — part of the real configured limit
+was silently unreachable from the only frontend that exists. Fixed by
+pinning `maxUploadSize = 500` in `.streamlit/config.toml`, with a regression
+test (`test_frontend_config.py`) asserting it matches
+`Settings.api_max_upload_mb`'s default so the two can't silently drift apart
+again.
+
+**Not acted on, and not a bug:** an LLM-generated title occasionally missing
+a diacritic (data/prompt quality, not app code — see the report for detail).
+**Deferred, by the user's own call, not mine:** two minor UX notes (the
+Transcribe button doesn't grey out when the API is unreachable; the refine
+checkbox's `?` tooltip content wasn't checked) and the report's whole Part 3
+— researched, concrete visual-polish recommendations ranging from a
+20-minute `config.toml` expansion to adopting a Streamlit component library.
+None of these are bugs; they're a real scope/effort decision about how much
+design investment a local personal tool deserves, left to be picked up
+explicitly rather than assumed.
+
+**Tests:** 4 new regression tests (`TestOpenAPISpecQuality`) asserting the
+`/openapi.json` shape directly — different status codes get different
+examples, error responses declare only the real media type, the docx
+endpoint's 200 response has no JSON content type, the benchmark tag
+description is self-contained — plus 2 for the upload-size fix. 290 unit
+tests total project-wide.
 
 ---
 

@@ -540,6 +540,64 @@ class TestProblemDetails:
         assert "llm_temperature" in body["detail"]
 
 
+class TestOpenAPISpecQuality:
+    """Regression tests for two real bugs found in an external visual QA
+    pass over the rendered Swagger docs (see docs/visual-qa-report) --
+    both were runtime-correct and docs-only bugs: the server always
+    behaved right, but the *generated OpenAPI schema* was misleading."""
+
+    def test_different_status_codes_get_different_examples(self, api):
+        """Bug 1: every response referencing the shared Problem schema used
+        to show the *same* hardcoded example (a 404 "no such job") no
+        matter what status code it was actually documenting -- a 400 or
+        413 on POST /v1/jobs showed that same wrong 404 example."""
+        with api(FakeTranscriber([]), FakeChatModel([])) as client:
+            spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/v1/jobs"]["post"]["responses"]
+        example_400 = responses["400"]["content"]["application/problem+json"]["example"]
+        example_413 = responses["413"]["content"]["application/problem+json"]["example"]
+        assert example_400["status"] == 400
+        assert example_413["status"] == 413
+        assert example_400["detail"] != example_413["detail"]
+        assert "no such job" not in example_400["detail"]
+        assert "no such job" not in example_413["detail"]
+
+    def test_error_responses_declare_only_the_real_media_type(self, api):
+        """Every Problem-shaped response must declare only
+        application/problem+json -- not also a spurious application/json
+        that FastAPI's default response-model inference adds on its own
+        (the actual server never sends that content type for these)."""
+        with api(FakeTranscriber([]), FakeChatModel([])) as client:
+            spec = client.get("/openapi.json").json()
+        response_404 = spec["paths"]["/v1/jobs/{job_id}"]["get"]["responses"]["404"]
+        assert list(response_404["content"].keys()) == ["application/problem+json"]
+        assert response_404["content"]["application/problem+json"]["schema"] == {
+            "$ref": "#/components/schemas/Problem"
+        }
+
+    def test_docx_endpoint_does_not_claim_to_return_json(self, api):
+        """Bug 2: GET /v1/jobs/{job_id}/docx's 200 response had a stray
+        empty application/json entry (from FastAPI inferring a schema off
+        the -> FileResponse return annotation) that Swagger defaulted to,
+        showing a fabricated "string" example for an endpoint that always
+        actually returned a real .docx file."""
+        with api(FakeTranscriber([]), FakeChatModel([])) as client:
+            spec = client.get("/openapi.json").json()
+        response_200 = spec["paths"]["/v1/jobs/{job_id}/docx"]["get"]["responses"]["200"]
+        assert list(response_200["content"].keys()) == [
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ]
+
+    def test_benchmark_tag_description_is_self_contained(self, api):
+        """The benchmark tag's description used to tell the reader to "see
+        PLAN.md's Phase 6" -- a file in the repo, not something a consumer
+        reading /docs in a browser has access to."""
+        with api(FakeTranscriber([]), FakeChatModel([])) as client:
+            spec = client.get("/openapi.json").json()
+        benchmark_tag = next(t for t in spec["tags"] if t["name"] == "benchmark")
+        assert "PLAN.md" not in benchmark_tag["description"]
+
+
 # ---------------------------------------------------------------------------
 # integration: real mlx-whisper + real Ollama, end to end through the API
 # ---------------------------------------------------------------------------

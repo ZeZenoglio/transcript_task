@@ -87,13 +87,48 @@ TAGS_METADATA = [
     {"name": "jobs", "description": "Submit a recording for transcription and poll the async result."},
     {"name": "config", "description": "Read or live-patch the models/prompts/options new jobs run with."},
     {"name": "models", "description": "What's actually available in the local Ollama instance right now."},
-    {"name": "benchmark", "description": "Trigger an evaluation run against FLEURS/Common Voice and fetch its results — see PLAN.md's Phase 6."},
+    {"name": "benchmark", "description": "Score the current model/prompt configuration against public "
+                                          "speech datasets (word/character error rate, semantic distance) "
+                                          "and fetch the results."},
 ]
 
 _STATUS_TITLES = {
     400: "Bad Request", 404: "Not Found", 409: "Conflict",
     413: "Payload Too Large", 422: "Unprocessable Entity", 503: "Service Unavailable",
 }
+
+
+def problem_response(status_code: int, description: str, detail: str, instance: str = "") -> dict:
+    """One documented error response, with an example specific to *this*
+    status code -- not FastAPI's default of one example on the shared
+    `Problem` schema, which Swagger then applies to every response
+    referencing it regardless of what actually happened (found in a real
+    visual QA pass: a 400 "bad extension" response showed a 404 "no such
+    job" example -- see docs/visual-qa-report). This also fixes the
+    declared media type: without an explicit `content` override here,
+    FastAPI defaults every `{"model": Problem}` response to
+    `application/json` even though the server actually sends
+    `application/problem+json` (see the exception handlers above). The
+    schema `$ref` is set explicitly here too, alongside the example --
+    `custom_openapi()` above strips the auto-injected `application/json`
+    entry that would otherwise carry it, so without this line Swagger would
+    show an example but no formal schema for these responses."""
+    return {
+        "model": Problem,
+        "description": description,
+        "content": {
+            "application/problem+json": {
+                "schema": {"$ref": "#/components/schemas/Problem"},
+                "example": {
+                    "type": "about:blank",
+                    "title": _STATUS_TITLES.get(status_code, "Error"),
+                    "status": status_code,
+                    "detail": detail,
+                    "instance": instance,
+                },
+            }
+        },
+    }
 
 
 def build_settings() -> Settings:
@@ -137,6 +172,41 @@ app = FastAPI(
 app.add_middleware(RequestIDMiddleware)
 
 
+def custom_openapi() -> dict:
+    """FastAPI's additional-response handling (`responses={...}`) always
+    injects an `application/json` entry using the given `model`'s schema,
+    *in addition to* any explicit `content` override in the same dict (see
+    `fastapi/openapi/utils.py`'s handling of `route.responses`) -- there is
+    no supported way to suppress this per-route while still getting the
+    `Problem` schema correctly registered and referenced. Every response
+    that carries a `Problem` body is only ever actually sent as
+    `application/problem+json` (see the exception handlers above), so a
+    real visual QA pass caught this as a genuine bug: the docs claimed two
+    possible content types where only one is real (see docs/visual-qa-report).
+    Post-processing the generated schema once, here, fixes it for every
+    route uniformly instead of a per-route workaround repeated ~10 times.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+
+    schema = get_openapi(
+        title=app.title, version=app.version, description=app.description,
+        routes=app.routes, tags=app.openapi_tags,
+    )
+    for path_item in schema.get("paths", {}).values():
+        for operation in path_item.values():
+            for response in operation.get("responses", {}).values():
+                content = response.get("content", {})
+                if "application/problem+json" in content and "application/json" in content:
+                    del content["application/json"]
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
+
+
 def _session(app_: FastAPI) -> Session:
     return get_session(app_.state.settings)
 
@@ -167,7 +237,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return _problem(422, messages, str(request.url.path))
 
 
-NOT_FOUND = {404: {"model": Problem, "description": "No resource with that id."}}
+NOT_FOUND = {404: problem_response(404, "No resource with that id.", "no such job: deadbeef", "/v1/jobs/deadbeef")}
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +300,10 @@ def _new_job_dir(settings: Settings, job_id: str) -> Path:
                 "skips it entirely (faster, no LLM cost, `refined_transcript` stays null).",
     response_description="The new job's id and initial status (always 'queued').",
     responses={
-        400: {"model": Problem, "description": "Unsupported audio file extension."},
-        413: {"model": Problem, "description": "Upload exceeds the configured size limit."},
+        400: problem_response(400, "Unsupported audio file extension.",
+                              "unsupported audio extension '.txt'", "/v1/jobs"),
+        413: problem_response(413, "Upload exceeds the configured size limit.",
+                              "upload exceeds 500 MB limit", "/v1/jobs"),
     },
 )
 async def create_job(
@@ -337,6 +409,24 @@ def get_job_result(job_id: str) -> JobResult:
 
 @app.get(
     "/v1/jobs/{job_id}/docx", tags=["jobs"],
+    # response_model=None and response_class=FileResponse: without these,
+    # FastAPI's OpenAPI generator derives the 200 response's content-type
+    # from the *app's default response class* (JSONResponse), not from what
+    # this route actually returns -- adding a stray `application/json`
+    # entry (empty schema) alongside the real docx content-type below.
+    # Swagger then defaults its dropdown to that one and shows a fabricated
+    # `"string"` example, making the docs claim this endpoint returns JSON
+    # (a real bug caught in a visual QA pass, not a runtime issue -- the
+    # actual response was always a correct .docx file; see
+    # docs/visual-qa-report). FileResponse.media_type is None by default,
+    # which is what actually suppresses FastAPI's automatic content-type
+    # injection (confirmed against fastapi/openapi/utils.py's
+    # get_openapi_path: it only adds an entry when
+    # `current_response_class.media_type` is truthy) -- response_model=None
+    # alone does not fix this, since that logic keys off response_class,
+    # not response_model.
+    response_model=None,
+    response_class=FileResponse,
     summary="Download the generated Word document",
     description="Only available once `status` is `done` (or, if refine was requested and "
                 "rejected by the quality guard, still generated -- see `refine_rejected` in "
@@ -344,8 +434,10 @@ def get_job_result(job_id: str) -> JobResult:
                 "regardless of whether refine ran.",
     response_description="The .docx file.",
     responses={
-        404: {"model": Problem, "description": "Job not found, not finished, or the document "
-                                                "record exists but the file is missing on disk."},
+        404: problem_response(404, "Job not found, not finished, or the document record "
+                                   "exists but the file is missing on disk.",
+                              "no document available for this job (not done, or refine/summarize failed)",
+                              "/v1/jobs/deadbeef/docx"),
         200: {"content": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document": {}}},
     },
 )
@@ -371,8 +463,10 @@ def get_job_docx(job_id: str) -> FileResponse:
                 "A finished job (done/failed/canceled) is purged immediately: its DB row, "
                 "stage timings, and on-disk files (including any .docx) are all removed.",
     responses={
-        404: {"model": Problem, "description": "No such job."},
-        409: {"model": Problem, "description": "Job is currently running and cannot be interrupted."},
+        404: problem_response(404, "No such job.", "no such job: deadbeef", "/v1/jobs/deadbeef"),
+        409: problem_response(409, "Job is currently running and cannot be interrupted.",
+                              "job is currently running and cannot be interrupted -- "
+                              "retry once it reaches a terminal status", "/v1/jobs/a1b2c3d4"),
     },
 )
 def delete_job(job_id: str) -> None:
@@ -432,10 +526,11 @@ def get_config() -> ConfigResponse:
                 "never retroactive and never needs to wait for in-flight jobs to finish. Every "
                 "accepted change is recorded (append-only) and survives a server restart.",
     responses={
-        422: {"model": Problem, "description": "Unknown refine_prompt_id, or llm_model not "
-                                                "found in `ollama list`."},
-        503: {"model": Problem, "description": "Ollama unreachable, needed to validate a "
-                                                "model-name change."},
+        422: problem_response(422, "Unknown refine_prompt_id, or llm_model not found in `ollama list`.",
+                              "'qwen3.5:99b' is not one of Ollama's available models: "
+                              "['qwen3.5:4b', 'qwen3.5:9b']", "/v1/config"),
+        503: problem_response(503, "Ollama unreachable, needed to validate a model-name change.",
+                              "cannot reach Ollama to validate model name: Connection refused", "/v1/config"),
     },
 )
 def patch_config(patch: ConfigPatch) -> ConfigResponse:
@@ -489,7 +584,8 @@ def patch_config(patch: ConfigPatch) -> ConfigResponse:
     description="A live `ollama list` call, not a cached/configured value -- reflects "
                 "whatever's actually pulled on this machine right now. Useful before "
                 "`PATCH /v1/config` to check a model name is valid.",
-    responses={503: {"model": Problem, "description": "Ollama unreachable."}},
+    responses={503: problem_response(503, "Ollama unreachable.",
+                                     "cannot reach Ollama: Connection refused", "/v1/models")},
 )
 def list_models() -> list[ModelInfo]:
     try:
@@ -509,14 +605,15 @@ def list_models() -> list[ModelInfo]:
     "/v1/benchmark", response_model=BenchmarkRunOut, status_code=202, tags=["benchmark"],
     summary="Run a benchmark tier",
     description="Scores the current model/prompt configuration against FLEURS or Common Voice "
-                "ground truth (WER/CER/SemDist, refine before/after delta -- see PLAN.md's "
-                "Phase 6). Runs in the background on the same thread pool as real jobs, so it "
-                "shares the same concurrency cap and never runs at the same time as one. "
-                "`tier='smoke'` uses the 4 clips committed to the repo (no download needed); "
-                "`'quick'`/`'full'` need `scripts/fetch_dataset.py`/`fetch_common_voice.py` run "
-                "first.",
+                "ground truth (word/character error rate, semantic distance, and the refine "
+                "stage's before/after delta against that same ground truth). Runs in the "
+                "background on the same thread pool as real jobs, so it shares the same "
+                "concurrency cap and never runs at the same time as one. `tier='smoke'` uses "
+                "4 small clips committed to the repo (no download needed); `'quick'`/`'full'` "
+                "need the corresponding dataset fetched on the server first.",
     responses={
-        409: {"model": Problem, "description": "A run with this `tag` already exists."},
+        409: problem_response(409, "A run with this `tag` already exists.",
+                              "a benchmark run tagged 'qwen9b-baseline' already exists", "/v1/benchmark"),
     },
 )
 def create_benchmark(request: Annotated[BenchmarkCreateRequest, Body()]) -> BenchmarkRunOut:
@@ -560,8 +657,11 @@ def get_benchmark(tag: str) -> BenchmarkRunOut:
                 "settings snapshot) -- the same object `scripts/benchmark.py` writes to "
                 "`benchmarks/<tag>/results.json`.",
     responses={
-        404: {"model": Problem, "description": "No such benchmark run."},
-        409: {"model": Problem, "description": "Run exists but hasn't finished yet."},
+        404: problem_response(404, "No such benchmark run.",
+                              "no such benchmark run: qwen9b-baseline", "/v1/benchmark/qwen9b-baseline/results"),
+        409: problem_response(409, "Run exists but hasn't finished yet.",
+                              "benchmark run 'qwen9b-baseline' is not finished yet (status=running)",
+                              "/v1/benchmark/qwen9b-baseline/results"),
     },
 )
 def get_benchmark_results(tag: str) -> dict:
