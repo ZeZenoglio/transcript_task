@@ -781,14 +781,32 @@ just a benchmark metric:
   better one). 6 new tests (`test_docx_writer.py::TestRefineRejected`) cover
   the document rendering.
 
-**Open question, deliberately not resolved here:** whether refine's prompt
-should be made more conservative (less prone to rewording already-correct
-text) is a prompt-engineering decision, not an infrastructure one — this
-follow-up built the tools to measure it (the noisy tier) and the safety net
-against its worst failure mode (the runtime guard), but didn't tune the
-prompt itself. That's future work once genuinely spontaneous/disfluent
-Portuguese audio (neither FLEURS nor Common Voice qualifies) is available to
-calibrate against.
+**Decided (2026-09-25): tune the refine prompt next, using this harness as
+the objective measure.** Whether refine's prompt should be made more
+conservative (less prone to rewording already-correct text) was left open
+above as a prompt-engineering decision distinct from the infrastructure this
+follow-up built. It's now approved as the next concrete task, not yet
+executed:
+
+- `prompts.py`'s `PromptTemplate.id` already exists specifically for this —
+  each candidate wording becomes `refine-pt-v2`, `refine-pt-v3`, etc., and
+  `BenchmarkResult.refine_prompt_id` already records which one produced a
+  given run, so comparing prompt variants is a `compare` call away with no
+  new plumbing needed.
+- Candidate direction: make the prompt more conservative about rewording
+  text that's already correct (the failure mode both real runs measured —
+  1/30 improved vs. 7/30 worsened on Common Voice), while preserving what it
+  currently does right (collapsing repetition-loop hallucinations, fixing
+  garbled proper nouns from context — see "What the refine pass actually
+  fixes" in the README). Judge candidates against **both** the FLEURS and
+  Common Voice `quick` tiers, not just one, since they've already shown
+  different WER baselines.
+- Still an open limitation, not solved by this: neither dataset contains
+  genuinely spontaneous/disfluent speech (refine's actual target domain), so
+  a prompt tuned against these two tiers is tuned against "reads correctly
+  but could be reworded less," not against "actually has disfluencies to
+  remove." Worth remembering when interpreting a tuned prompt's benchmark
+  win as more than a proxy signal.
 
 ---
 
@@ -803,7 +821,7 @@ simultaneously will swap and crater.
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | liveness + ffmpeg/Ollama/model reachability and versions |
-| `POST /v1/jobs` | upload audio (multipart), optional per-job config override → `202` |
+| `POST /v1/jobs` | upload audio (multipart), `refine: bool` + optional per-job config override → `202` |
 | `GET /v1/jobs` · `GET /v1/jobs/{id}` | list / status + stage progress |
 | `GET /v1/jobs/{id}/result` · `/docx` | transcript JSON · generated document |
 | `DELETE /v1/jobs/{id}` | cancel / purge |
@@ -814,6 +832,28 @@ simultaneously will swap and crater.
 Config mutation notes: validate against available Ollama models on `PATCH`, reject
 changes while jobs are in flight (or version the config per job — a job must record the
 config it *ran under*, not the current one), and persist so restarts keep the change.
+
+**Requested 2026-09-25: `refine` is a user-facing, per-job choice, and both
+transcripts are always in the result when it runs.** `POST /v1/jobs` takes a
+`refine: bool` field (mirrors the CLI's existing `--skip-refine`, just
+exposed as an explicit opt-in/out per job rather than a flag on the whole
+process). Two rules, both binding on the response schema:
+- `refine=false` — the refine stage never runs for that job (faster, no LLM
+  cost); the result carries only `raw_transcript`.
+- `refine=true` (default) — the refine stage runs, and the result **always**
+  includes both `raw_transcript` and `refined_transcript` side by side, never
+  just the refined one. This isn't new behavior invented for the API: the
+  pipeline's state (`transcripts.json`) and every `.docx` it writes already
+  carry both today (the docx's raw-transcript appendix exists for exactly
+  this reason — see "What the refine pass actually fixes" in the README).
+  The API's job here is to not regress that guarantee by only exposing one
+  field where the pipeline already tracks two — a caller decides which
+  version to show a user, the API doesn't decide for them.
+- If the refine-quality guard (Phase 6 follow-up) rejects the refine
+  attempt, the result should say so explicitly (`refine_rejected: {...}`,
+  same shape already stored in pipeline state) rather than silently look
+  identical to `refine=false` — a caller displaying "revised version
+  unavailable" needs to know *why*.
 
 **SQLite** (`runs.db`, SQLModel/SQLAlchemy): `jobs`, `stage_timings`, `benchmark_runs`,
 `config_history`. `jobs.id` **is** the `transcript_id` introduced in Phase 3b, not a
@@ -981,3 +1021,5 @@ is a hard gate requiring your confirmation.
 | 11 | **Regression threshold: 0.02 absolute** (2 percentage points of WER/CER/SemDist), built in Phase 6 with no objection raised. Configurable via `compare --threshold`; a metric missing from either compared run is skipped rather than flagged, so comparing runs of different tiers never fails spuriously. |
 | 12 | **Second benchmark dataset: Common Voice pt via `fsicoli/common_voice_17_0`** (CC0-1.0 community mirror), not the official `mozilla-foundation` org's repo — that one requires a loading script `datasets` 5.x can no longer run at all. Requested by the user explicitly to test whether refine's WER-erosion finding was an artifact of FLEURS' unusually clean audio (it wasn't — see Phase 6's second follow-up). |
 | 13 | **Refine quality guard: fail soft and visible, not silent, and not a hard abort.** A rejected refine attempt falls back to the raw transcript (reusing summarize/docx's existing fallback for a missing `refined_transcript`) but is never thrown away — kept in state, shown in the docx as a labeled appendix with the specific numbers that triggered rejection, so a reviewer can judge the guard's call. Thresholds (`refine_min_content_recall=0.5`, `refine_min/max_length_ratio=0.3/2.5`) are deliberately generous and explicitly documented as uncalibrated (no genuinely spontaneous-disfluent-speech dataset exists yet to calibrate against) — built to catch catastrophic failures (truncation, runaway generation), not to flag normal hesitation-removal shrinkage. |
+| 14 | **Refine prompt tuning approved as the next concrete task** (2026-09-25), using the Phase 6 eval harness (both FLEURS and Common Voice `quick` tiers) as the objective measure rather than judgement calls — see Phase 6's "Decided: tune the refine prompt next." Not yet executed. |
+| 15 | **API: `refine` is a per-job, user-facing toggle; both transcripts are always returned when it runs** (2026-09-25). `refine=false` skips the stage entirely (raw only, faster); `refine=true` (default) returns `raw_transcript` **and** `refined_transcript` together, never just one — the API must not regress the guarantee the pipeline state and docx already provide today. See Phase 7. |
