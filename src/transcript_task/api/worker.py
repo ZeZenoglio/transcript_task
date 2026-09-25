@@ -18,7 +18,7 @@ from sqlmodel import Session, select
 from ..eval.mlflow_sink import DEFAULT_ARTIFACTS_DIR
 from ..eval.orchestrator import DatasetNotFetched, run_benchmark_tier
 from ..settings import Settings
-from .db import BenchmarkRun, Job, JobStatus, StageTiming, get_engine
+from .db import BenchmarkRun, BenchmarkStatus, Job, JobStatus, StageTiming, get_engine
 from .job_runner import JobStageError, cleanup_job_files, job_settings, run_job
 
 logger = logging.getLogger("transcript_task.api.worker")
@@ -80,7 +80,7 @@ class JobWorker:
                     transcriber=self.transcriber, chat_model=self.chat_model,
                 )
             except DatasetNotFetched as exc:
-                run.status = "failed"
+                run.status = BenchmarkStatus.failed
                 run.error = str(exc)
                 run.finished_at = datetime.now(timezone.utc)
                 session.add(run)
@@ -88,7 +88,7 @@ class JobWorker:
                 logger.warning("benchmark %s failed: %s", tag, exc)
                 return
             except Exception as exc:  # noqa: BLE001
-                run.status = "failed"
+                run.status = BenchmarkStatus.failed
                 run.error = f"unexpected error: {exc}"
                 run.finished_at = datetime.now(timezone.utc)
                 session.add(run)
@@ -96,7 +96,7 @@ class JobWorker:
                 logger.exception("benchmark %s failed unexpectedly", tag)
                 return
 
-            run.status = "done"
+            run.status = BenchmarkStatus.done
             run.finished_at = datetime.now(timezone.utc)
             run.results_path = f"{DEFAULT_ARTIFACTS_DIR}/{tag}/results.json"
             session.add(run)

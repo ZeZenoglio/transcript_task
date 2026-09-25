@@ -219,6 +219,14 @@ class TestConfig:
         assert r.status_code == 200
         assert r.json()["refine_prompt_id"] == "refine-pt-v2"
 
+    def test_get_config_states_upload_constraints(self, api):
+        """Phase 8: upload limits must be discoverable from the API itself,
+        not just a description string that can drift out of date."""
+        with api(FakeTranscriber([]), FakeChatModel([])) as client:
+            body = client.get("/v1/config").json()
+        assert body["api_max_upload_mb"] > 0
+        assert ".wav" in body["audio_extensions"]
+
     def test_patch_rejects_unknown_refine_prompt_id(self, api):
         with api(FakeTranscriber([]), FakeChatModel([])) as client:
             r = client.patch("/v1/config", json={"refine_prompt_id": "bogus"})
@@ -505,6 +513,31 @@ class TestUnknownJob:
         with api(FakeTranscriber([]), FakeChatModel([])) as client:
             r = client.delete("/v1/jobs/deadbeef")
         assert r.status_code == 404
+
+
+class TestProblemDetails:
+    """Phase 8: every error response is RFC 7807, not FastAPI's default
+    {"detail": "..."} shape."""
+
+    def test_http_exception_is_rfc7807_shaped(self, api):
+        with api(FakeTranscriber([]), FakeChatModel([])) as client:
+            r = client.get("/v1/jobs/deadbeef")
+        assert r.headers["content-type"] == "application/problem+json"
+        body = r.json()
+        assert body["type"] == "about:blank"
+        assert body["title"] == "Not Found"
+        assert body["status"] == 404
+        assert "deadbeef" in body["detail"]
+        assert body["instance"] == "/v1/jobs/deadbeef"
+
+    def test_validation_error_is_also_rfc7807_shaped(self, api):
+        with api(FakeTranscriber([]), FakeChatModel([])) as client:
+            r = client.patch("/v1/config", json={"llm_temperature": "not-a-number"})
+        assert r.status_code == 422
+        assert r.headers["content-type"] == "application/problem+json"
+        body = r.json()
+        assert body["status"] == 422
+        assert "llm_temperature" in body["detail"]
 
 
 # ---------------------------------------------------------------------------

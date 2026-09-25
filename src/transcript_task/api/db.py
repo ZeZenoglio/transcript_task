@@ -39,6 +39,12 @@ class JobStatus(str, Enum):
 TERMINAL_STATUSES = frozenset({JobStatus.done, JobStatus.failed, JobStatus.canceled})
 
 
+class BenchmarkStatus(str, Enum):
+    running = "running"
+    done = "done"
+    failed = "failed"
+
+
 class Job(SQLModel, table=True):
     id: str = Field(primary_key=True)  # transcript_id (8-char hex)
     filename: str
@@ -78,7 +84,7 @@ class BenchmarkRun(SQLModel, table=True):
     id: str = Field(primary_key=True)  # the run's tag
     dataset: str
     tier: str
-    status: str = "running"
+    status: BenchmarkStatus = BenchmarkStatus.running
     created_at: datetime = Field(default_factory=_now)
     finished_at: datetime | None = None
     error: str | None = None

@@ -18,8 +18,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Session, select
 
 from ..pipeline import new_transcript_id
@@ -28,6 +29,7 @@ from ..settings import PROJECT_ROOT, Settings
 from .db import (
     TERMINAL_STATUSES,
     BenchmarkRun,
+    BenchmarkStatus,
     ConfigHistory,
     Job,
     JobStatus,
@@ -49,11 +51,49 @@ from .schemas import (
     JobResult,
     JobSummary,
     ModelInfo,
+    Problem,
     StageTimingOut,
 )
 from .worker import JobWorker, purge_job
 
 logger = get_logger("transcript_task.api")
+
+DESCRIPTION = """
+A local speech-to-text service: submit an audio recording, get back a corrected,
+punctuated transcript and a reviewed Word document. ASR runs on Whisper (MLX);
+cleanup and summarisation run on a local Ollama model. **Nothing leaves this
+machine** — no cloud calls, no telemetry, no third-party API keys.
+
+## Quickstart
+1. `POST /v1/jobs` with an audio file (multipart) → `202` and a `job_id`.
+2. Poll `GET /v1/jobs/{job_id}` until `status` is `done` (or `failed`).
+3. `GET /v1/jobs/{job_id}/result` for the transcript JSON, or
+   `GET /v1/jobs/{job_id}/docx` for the generated Word document.
+
+## Why the job endpoints are async
+Transcription is minutes long, so `POST /v1/jobs` never blocks on it — it
+returns immediately and the work runs in the background, **one job at a time
+by default** (`Settings.api_concurrency`). That cap is deliberate, not a
+bug: running Whisper and a local LLM at once already uses most of what a
+16 GB machine has to give.
+
+## Errors
+Every non-2xx response is [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807)
+`application/problem+json` — see the `Problem` schema.
+"""
+
+TAGS_METADATA = [
+    {"name": "health", "description": "Liveness and dependency reachability (ffmpeg/ffprobe/Ollama)."},
+    {"name": "jobs", "description": "Submit a recording for transcription and poll the async result."},
+    {"name": "config", "description": "Read or live-patch the models/prompts/options new jobs run with."},
+    {"name": "models", "description": "What's actually available in the local Ollama instance right now."},
+    {"name": "benchmark", "description": "Trigger an evaluation run against FLEURS/Common Voice and fetch its results — see PLAN.md's Phase 6."},
+]
+
+_STATUS_TITLES = {
+    400: "Bad Request", 404: "Not Found", 409: "Conflict",
+    413: "Payload Too Large", 422: "Unprocessable Entity", 503: "Service Unavailable",
+}
 
 
 def build_settings() -> Settings:
@@ -87,7 +127,13 @@ async def lifespan(app: FastAPI):
     logger.info("api_shutdown")
 
 
-app = FastAPI(title="transcript_task API", lifespan=lifespan)
+app = FastAPI(
+    title="transcript_task API",
+    description=DESCRIPTION,
+    version="0.1.0",
+    openapi_tags=TAGS_METADATA,
+    lifespan=lifespan,
+)
 app.add_middleware(RequestIDMiddleware)
 
 
@@ -95,11 +141,47 @@ def _session(app_: FastAPI) -> Session:
     return get_session(app_.state.settings)
 
 
+def _problem(status_code: int, detail: str, instance: str) -> JSONResponse:
+    problem = Problem(
+        title=_STATUS_TITLES.get(status_code, "Error"), status=status_code,
+        detail=detail, instance=instance,
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content=problem.model_dump(exclude_none=True),
+        media_type="application/problem+json",
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Every HTTPException raised anywhere in this app (see the routes
+    below) is rendered as RFC 7807 rather than FastAPI's default
+    `{"detail": ...}` -- see the Problem schema and DESCRIPTION above."""
+    return _problem(exc.status_code, str(exc.detail), str(request.url.path))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    messages = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
+    return _problem(422, messages, str(request.url.path))
+
+
+NOT_FOUND = {404: {"model": Problem, "description": "No resource with that id."}}
+
+
 # ---------------------------------------------------------------------------
 # health
 # ---------------------------------------------------------------------------
 
-@app.get("/health", response_model=HealthResponse)
+@app.get(
+    "/health", response_model=HealthResponse, tags=["health"],
+    summary="Liveness and dependency check",
+    description="Always returns `200` (never an error) -- check the `status` field, not the "
+                "HTTP status code, to tell 'ok' from 'degraded'. Useful before submitting a job: "
+                "if ffmpeg/ffprobe or Ollama are unreachable, every job will fail at that stage.",
+    response_description="Current reachability of every dependency this service needs.",
+)
 def health() -> HealthResponse:
     settings = app.state.settings
     ffmpeg_ok = shutil.which("ffmpeg") is not None
@@ -134,10 +216,27 @@ def _new_job_dir(settings: Settings, job_id: str) -> Path:
     return js.extract_dir
 
 
-@app.post("/v1/jobs", response_model=JobCreateResponse, status_code=202)
+@app.post(
+    "/v1/jobs", response_model=JobCreateResponse, status_code=202, tags=["jobs"],
+    summary="Submit a recording for transcription",
+    description="Accepts one audio file and returns immediately with a `job_id` -- "
+                "transcription runs in the background (see the top-level description's "
+                "'Why the job endpoints are async'). Allowed extensions and the upload size "
+                "cap are both visible at `GET /v1/config` "
+                "(`audio_extensions`/`api_max_upload_mb`), since they're config, not a fixed "
+                "constant this description could drift out of sync with.\n\n"
+                "`refine=true` (the default) runs the LLM cleanup pass and the result will "
+                "carry **both** `raw_transcript` and `refined_transcript`; `refine=false` "
+                "skips it entirely (faster, no LLM cost, `refined_transcript` stays null).",
+    response_description="The new job's id and initial status (always 'queued').",
+    responses={
+        400: {"model": Problem, "description": "Unsupported audio file extension."},
+        413: {"model": Problem, "description": "Upload exceeds the configured size limit."},
+    },
+)
 async def create_job(
-    file: Annotated[UploadFile, File()],
-    refine: Annotated[bool, Form()] = True,
+    file: Annotated[UploadFile, File(description="An audio recording. See GET /v1/config for accepted extensions.")],
+    refine: Annotated[bool, Form(description="Run the LLM cleanup pass. See the endpoint description.")] = True,
 ) -> JobCreateResponse:
     settings: Settings = app.state.settings
     suffix = Path(file.filename or "").suffix.lower()
@@ -174,8 +273,13 @@ async def create_job(
     return JobCreateResponse(job_id=job_id, status=JobStatus.queued)
 
 
-@app.get("/v1/jobs", response_model=list[JobSummary])
-def list_jobs(limit: int = 50) -> list[JobSummary]:
+@app.get(
+    "/v1/jobs", response_model=list[JobSummary], tags=["jobs"],
+    summary="List jobs, most recent first",
+    description="No filtering by status yet -- fetch the list and filter client-side, or "
+                "poll a specific `GET /v1/jobs/{job_id}` if you already know its id.",
+)
+def list_jobs(limit: Annotated[int, Query(gt=0, le=500, description="Max jobs to return.")] = 50) -> list[JobSummary]:
     with _session(app) as session:
         jobs = session.exec(select(Job).order_by(Job.created_at.desc()).limit(limit)).all()  # type: ignore[union-attr]
         return [JobSummary.model_validate(j, from_attributes=True) for j in jobs]
@@ -188,14 +292,25 @@ def _get_job_or_404(session: Session, job_id: str) -> Job:
     return job
 
 
-@app.get("/v1/jobs/{job_id}", response_model=JobSummary)
+@app.get(
+    "/v1/jobs/{job_id}", response_model=JobSummary, tags=["jobs"],
+    summary="Job status", responses=NOT_FOUND,
+    description="Poll this until `status` is a terminal value (`done`, `failed`, `canceled`) -- "
+                "the intermediate values (`normalizing`, `transcribing`, `refining`, "
+                "`summarizing`, `writing_docx`) show which stage is currently running.",
+)
 def get_job(job_id: str) -> JobSummary:
     with _session(app) as session:
         job = _get_job_or_404(session, job_id)
         return JobSummary.model_validate(job, from_attributes=True)
 
 
-@app.get("/v1/jobs/{job_id}/timings", response_model=list[StageTimingOut])
+@app.get(
+    "/v1/jobs/{job_id}/timings", response_model=list[StageTimingOut], tags=["jobs"],
+    summary="Per-stage timing", responses=NOT_FOUND,
+    description="Seconds spent in each completed stage. Empty until stages finish; a stage "
+                "that's still running or was skipped (e.g. refine when `refine=false`) has no entry.",
+)
 def get_job_timings(job_id: str) -> list[StageTimingOut]:
     with _session(app) as session:
         _get_job_or_404(session, job_id)
@@ -203,7 +318,14 @@ def get_job_timings(job_id: str) -> list[StageTimingOut]:
         return [StageTimingOut(stage=t.stage, seconds=t.seconds) for t in timings]
 
 
-@app.get("/v1/jobs/{job_id}/result", response_model=JobResult)
+@app.get(
+    "/v1/jobs/{job_id}/result", response_model=JobResult, tags=["jobs"],
+    summary="Transcript result", responses=NOT_FOUND,
+    description="Returns the job's current fields regardless of status -- most are still "
+                "null until the relevant stage completes. Check `status` (or poll "
+                "`GET /v1/jobs/{job_id}` first) to know whether this is a finished result or "
+                "a still-in-progress one.",
+)
 def get_job_result(job_id: str) -> JobResult:
     with _session(app) as session:
         job = _get_job_or_404(session, job_id)
@@ -213,7 +335,20 @@ def get_job_result(job_id: str) -> JobResult:
         )
 
 
-@app.get("/v1/jobs/{job_id}/docx")
+@app.get(
+    "/v1/jobs/{job_id}/docx", tags=["jobs"],
+    summary="Download the generated Word document",
+    description="Only available once `status` is `done` (or, if refine was requested and "
+                "rejected by the quality guard, still generated -- see `refine_rejected` in "
+                "the result). The document embeds the raw transcript as an appendix "
+                "regardless of whether refine ran.",
+    response_description="The .docx file.",
+    responses={
+        404: {"model": Problem, "description": "Job not found, not finished, or the document "
+                                                "record exists but the file is missing on disk."},
+        200: {"content": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document": {}}},
+    },
+)
 def get_job_docx(job_id: str) -> FileResponse:
     with _session(app) as session:
         job = _get_job_or_404(session, job_id)
@@ -226,7 +361,20 @@ def get_job_docx(job_id: str) -> FileResponse:
                          media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
-@app.delete("/v1/jobs/{job_id}", status_code=204)
+@app.delete(
+    "/v1/jobs/{job_id}", status_code=204, tags=["jobs"],
+    summary="Cancel or purge a job",
+    description="A still-queued job is canceled outright. A **currently running** job "
+                "cannot be interrupted -- Python threads running the ASR/LLM calls aren't "
+                "preemptible and have no cancellation hook -- so this returns `409` rather "
+                "than pretending to succeed; retry once the job reaches a terminal status. "
+                "A finished job (done/failed/canceled) is purged immediately: its DB row, "
+                "stage timings, and on-disk files (including any .docx) are all removed.",
+    responses={
+        404: {"model": Problem, "description": "No such job."},
+        409: {"model": Problem, "description": "Job is currently running and cannot be interrupted."},
+    },
+)
 def delete_job(job_id: str) -> None:
     worker: JobWorker = app.state.worker
     with _session(app) as session:
@@ -255,18 +403,46 @@ def delete_job(job_id: str) -> None:
 # config
 # ---------------------------------------------------------------------------
 
-@app.get("/v1/config", response_model=ConfigResponse)
+def _config_response(settings: Settings) -> ConfigResponse:
+    return ConfigResponse(
+        **{f: getattr(settings, f) for f in CONFIGURABLE_FIELDS},
+        api_max_upload_mb=settings.api_max_upload_mb,
+        audio_extensions=sorted(settings.audio_extensions),
+    )
+
+
+@app.get(
+    "/v1/config", response_model=ConfigResponse, tags=["config"],
+    summary="Current effective configuration",
+    description="What every *new* job will run under right now. A job already running keeps "
+                "whatever config was in effect when its own stages started (see PATCH below).",
+)
 def get_config() -> ConfigResponse:
-    settings: Settings = app.state.settings
-    return ConfigResponse(**{f: getattr(settings, f) for f in CONFIGURABLE_FIELDS})
+    return _config_response(app.state.settings)
 
 
-@app.patch("/v1/config", response_model=ConfigResponse)
+@app.patch(
+    "/v1/config", response_model=ConfigResponse, tags=["config"],
+    summary="Live-patch the configuration",
+    description="Only the fields you send are changed (PATCH semantics) -- omitted fields "
+                "keep their current value. `llm_model`/`asr_model` are checked against "
+                "`ollama list` and `refine_prompt_id` against the known prompt ids before "
+                "being accepted. **Does not affect jobs already running**: each job runs "
+                "under its own copy of the config taken when it started, so a change here is "
+                "never retroactive and never needs to wait for in-flight jobs to finish. Every "
+                "accepted change is recorded (append-only) and survives a server restart.",
+    responses={
+        422: {"model": Problem, "description": "Unknown refine_prompt_id, or llm_model not "
+                                                "found in `ollama list`."},
+        503: {"model": Problem, "description": "Ollama unreachable, needed to validate a "
+                                                "model-name change."},
+    },
+)
 def patch_config(patch: ConfigPatch) -> ConfigResponse:
     settings: Settings = app.state.settings
     updates = patch.model_dump(exclude_unset=True)
     if not updates:
-        return ConfigResponse(**{f: getattr(settings, f) for f in CONFIGURABLE_FIELDS})
+        return _config_response(settings)
 
     if "refine_prompt_id" in updates:
         try:
@@ -304,10 +480,17 @@ def patch_config(patch: ConfigPatch) -> ConfigResponse:
     app.state.settings = new_settings
     app.state.worker.settings = new_settings
     logger.info("config_changed", **{k: v["to"] for k, v in changes.items()})
-    return ConfigResponse(**snapshot)
+    return _config_response(new_settings)
 
 
-@app.get("/v1/models", response_model=list[ModelInfo])
+@app.get(
+    "/v1/models", response_model=list[ModelInfo], tags=["models"],
+    summary="Available Ollama models",
+    description="A live `ollama list` call, not a cached/configured value -- reflects "
+                "whatever's actually pulled on this machine right now. Useful before "
+                "`PATCH /v1/config` to check a model name is valid.",
+    responses={503: {"model": Problem, "description": "Ollama unreachable."}},
+)
 def list_models() -> list[ModelInfo]:
     try:
         import ollama
@@ -322,13 +505,26 @@ def list_models() -> list[ModelInfo]:
 # benchmark
 # ---------------------------------------------------------------------------
 
-@app.post("/v1/benchmark", response_model=BenchmarkRunOut, status_code=202)
+@app.post(
+    "/v1/benchmark", response_model=BenchmarkRunOut, status_code=202, tags=["benchmark"],
+    summary="Run a benchmark tier",
+    description="Scores the current model/prompt configuration against FLEURS or Common Voice "
+                "ground truth (WER/CER/SemDist, refine before/after delta -- see PLAN.md's "
+                "Phase 6). Runs in the background on the same thread pool as real jobs, so it "
+                "shares the same concurrency cap and never runs at the same time as one. "
+                "`tier='smoke'` uses the 4 clips committed to the repo (no download needed); "
+                "`'quick'`/`'full'` need `scripts/fetch_dataset.py`/`fetch_common_voice.py` run "
+                "first.",
+    responses={
+        409: {"model": Problem, "description": "A run with this `tag` already exists."},
+    },
+)
 def create_benchmark(request: Annotated[BenchmarkCreateRequest, Body()]) -> BenchmarkRunOut:
     with _session(app) as session:
         existing = session.get(BenchmarkRun, request.tag)
         if existing is not None:
             raise HTTPException(409, f"a benchmark run tagged {request.tag!r} already exists")
-        run = BenchmarkRun(id=request.tag, dataset=request.dataset, tier=request.tier, status="running")
+        run = BenchmarkRun(id=request.tag, dataset=request.dataset, tier=request.tier, status=BenchmarkStatus.running)
         session.add(run)
         session.commit()
         session.refresh(run)
@@ -343,7 +539,12 @@ def create_benchmark(request: Annotated[BenchmarkCreateRequest, Body()]) -> Benc
     return out
 
 
-@app.get("/v1/benchmark/{tag}", response_model=BenchmarkRunOut)
+@app.get(
+    "/v1/benchmark/{tag}", response_model=BenchmarkRunOut, tags=["benchmark"],
+    summary="Benchmark run status", responses=NOT_FOUND,
+    description="Poll until `status` is `done` or `failed`, then fetch the full numbers from "
+                "`GET /v1/benchmark/{tag}/results`.",
+)
 def get_benchmark(tag: str) -> BenchmarkRunOut:
     with _session(app) as session:
         run = session.get(BenchmarkRun, tag)
@@ -352,7 +553,17 @@ def get_benchmark(tag: str) -> BenchmarkRunOut:
         return BenchmarkRunOut.model_validate(run, from_attributes=True)
 
 
-@app.get("/v1/benchmark/{tag}/results")
+@app.get(
+    "/v1/benchmark/{tag}/results", tags=["benchmark"],
+    summary="Full benchmark results",
+    description="The complete `BenchmarkResult` JSON (per-clip WER/CER/SemDist, aggregates, "
+                "settings snapshot) -- the same object `scripts/benchmark.py` writes to "
+                "`benchmarks/<tag>/results.json`.",
+    responses={
+        404: {"model": Problem, "description": "No such benchmark run."},
+        409: {"model": Problem, "description": "Run exists but hasn't finished yet."},
+    },
+)
 def get_benchmark_results(tag: str) -> dict:
     import json
 
@@ -360,7 +571,7 @@ def get_benchmark_results(tag: str) -> dict:
         run = session.get(BenchmarkRun, tag)
         if run is None:
             raise HTTPException(404, f"no such benchmark run: {tag}")
-        if run.status != "done" or not run.results_path:
+        if run.status != BenchmarkStatus.done or not run.results_path:
             raise HTTPException(409, f"benchmark run {tag!r} is not finished yet (status={run.status})")
         path = PROJECT_ROOT / run.results_path
         return json.loads(path.read_text(encoding="utf-8"))

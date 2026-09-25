@@ -228,6 +228,12 @@ with a `job_id` immediately, and the actual work runs in a small thread pool
 already the realistic ceiling on a 16GB machine). Poll `GET /v1/jobs/{id}` for
 status, then `GET /v1/jobs/{id}/result` or `/docx`.
 
+Full interactive docs at `/docs` (Swagger UI) once the server is running — every
+route has a real description, tagged grouping, and worked examples, and every
+error response is [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807)
+`application/problem+json` (`{"type", "title", "status", "detail", "instance"}`),
+not FastAPI's bare `{"detail": ...}` default.
+
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | liveness + ffmpeg/Ollama/model reachability |

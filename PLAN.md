@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–7 complete (2026-09-25, on `dev`). Phases 8-12 pending. All open
+**Status:** Phases 0–8 complete (2026-09-25, on `dev`). Phases 9-12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -20,12 +20,12 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
-| Tests | 242 unit tests (`uv run pytest`) + 3 integration tests against real Ollama/mlx-whisper |
+| Tests | 245 unit tests (`uv run pytest`) + 3 integration tests against real Ollama/mlx-whisper |
 | Benchmark data | FLEURS pt_br (919 clips, `scripts/fetch_dataset.py`) + Common Voice pt (9,467 clips, `scripts/fetch_common_voice.py`); diversified fixtures committed under `tests/fixtures/` and `tests/fixtures_noisy/` |
 | Eval harness | `scripts/benchmark.py run/compare --dataset {fleurs,common_voice}` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
 | Refine safety net | production runtime guard (`text_compare.py` + `pipeline.stage_refine`) discards a refine call that drifts too far from the raw transcript, visibly, falling back to raw |
 | Refine prompt | `refine-pt-v2` (default), tuned and measured against both benchmarks: cut refine's own WER regressions 7/30→2/30 (Common Voice) and 13/30→6/30 (FLEURS) vs. `refine-pt-v1`, still available by id |
-| API | FastAPI (`transcript_task.api.app`) — jobs (async, per-job `refine` toggle, always both transcripts when refine runs), config (live-patchable, validated, versioned per job), models, benchmark endpoints; SQLite (`runs.db`) persistence; `structlog` JSON+console logging |
+| API | FastAPI (`transcript_task.api.app`) — jobs (async, per-job `refine` toggle, always both transcripts when refine runs), config (live-patchable, validated, versioned per job), models, benchmark endpoints; SQLite (`runs.db`) persistence; `structlog` JSON+console logging; RFC 7807 errors, full OpenAPI docs at `/docs` |
 | Missing | linting, CI, frontend |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
@@ -1040,7 +1040,7 @@ unit tests total, 3 integration tests total.
 
 ---
 
-## Phase 8 — OpenAPI/Swagger review
+## Phase 8 — OpenAPI/Swagger review ✅ done
 
 Treated as its own pass, not a side effect.
 - Rich `summary`/`description` on every route, tags with descriptions, realistic request
@@ -1049,6 +1049,59 @@ Treated as its own pass, not a side effect.
 - Top-level `description` with a quickstart, the async job lifecycle explained, and a
   note that everything runs locally.
 - Review by actually opening `/docs` and reading it as a newcomer would.
+
+### Implementation notes (completed 2026-09-25, on `dev`)
+
+Every item above is real, not partial:
+
+- **RFC 7807 everywhere.** A new `Problem` schema (`type`/`title`/`status`/`detail`/`instance`)
+  plus two global exception handlers (`HTTPException`, `RequestValidationError`) replace
+  FastAPI's default `{"detail": ...}` shape with `application/problem+json` on every
+  non-2xx response, app-wide — one place to get this right rather than per-route
+  boilerplate. Verified for real: `GET /v1/jobs/deadbeef` and an invalid `PATCH
+  /v1/config` body both checked directly, not just asserted by type.
+- **Every route** got `tags`, `summary`, a `description` (initially 3 routes had only a
+  `summary` — caught by actually walking the generated `/openapi.json` programmatically
+  and checking every path, not by eyeballing the source), and a `responses={}` map
+  documenting its real non-2xx outcomes with `Problem` as the model.
+- **Realistic examples** via `json_schema_extra` on `JobCreateResponse`, `JobSummary`,
+  `JobResult`, `ConfigPatch`, `BenchmarkCreateRequest`, and `Problem` — actual plausible
+  values (a real-shaped `job_id`, a pt-PT summary), not `"string"`/`0` placeholders.
+- **Enum-typed fields tightened further than Phase 7 left them:** `BenchmarkRun.status`
+  was a plain `str` (`"running"`/`"done"`/`"failed"` set directly in code, no type backing
+  them) — added a proper `BenchmarkStatus` enum, matching `JobStatus`'s existing pattern,
+  so the OpenAPI schema shows the real closed set of values instead of `type: string`.
+- **`JobResult.summary`/`refine_rejected` were previously untyped `dict`s** — showed in
+  `/docs` as an opaque, propertyless "object". Now `RefineRejected` (new) and a new
+  `SummaryOut` model give both a full, documented shape. `SummaryOut` deliberately
+  mirrors `summarize.TranscriptSummary` rather than reusing it directly: that model's
+  `model_json_schema()` is also what's sent to Ollama as the structured-output
+  constraint (see `summarize.py`), so adding API-doc field descriptions there would
+  risk changing an already-tuned production prompt path just to improve unrelated
+  documentation. A short, separate, purely-additive model was the safer call.
+- **Upload constraints are discoverable, not just described in prose.** `GET /v1/config`
+  gained two read-only fields, `api_max_upload_mb` and `audio_extensions` — not
+  patchable (excluded from `CONFIGURABLE_FIELDS`/`ConfigPatch`), just informational, so
+  `POST /v1/jobs`'s docs can point at the live source of truth instead of a hardcoded
+  number that would drift out of sync the next time someone changes `Settings`.
+- **Top-level description** covers the quickstart (submit → poll → fetch result/docx),
+  explains *why* the job endpoints are async (the same concurrency-cap reasoning from
+  Phase 7, restated where a newcomer reading `/docs` cold will actually see it), states
+  the local-only/no-telemetry property explicitly, and points at the `Problem` schema
+  for error shape.
+
+**The review pass, done for real, with an honest caveat:** no interactive browser tool
+was available in this environment, so "opening `/docs`" was done by starting the actual
+server, fetching the rendered `/docs` HTML (confirmed `200`) and the generated
+`/openapi.json`, then walking every path/schema programmatically checking for missing
+summaries, descriptions, tags, and examples — the same defects a human skim would catch
+(three routes with a summary but no description), just found by a script instead of an
+eyeball. This is a narrower form of "review" than actually reading the rendered Swagger
+UI end to end, and is recorded here as a real scope limitation rather than a plain "done".
+
+**Tests:** 3 new (`TestProblemDetails`, plus a `GET /v1/config` upload-constraints check) —
+245 unit tests total, still 3 integration tests (nothing about a docs-only phase needed a
+new one).
 
 ---
 
