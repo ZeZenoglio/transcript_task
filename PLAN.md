@@ -20,10 +20,11 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
-| Tests | 197 unit tests (`uv run pytest`) + 2 integration tests against real Ollama/mlx-whisper |
+| Tests | 208 unit tests (`uv run pytest`) + 2 integration tests against real Ollama/mlx-whisper |
 | Benchmark data | FLEURS pt_br (919 clips, `scripts/fetch_dataset.py`) + Common Voice pt (9,467 clips, `scripts/fetch_common_voice.py`); diversified fixtures committed under `tests/fixtures/` and `tests/fixtures_noisy/` |
 | Eval harness | `scripts/benchmark.py run/compare --dataset {fleurs,common_voice}` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
 | Refine safety net | production runtime guard (`text_compare.py` + `pipeline.stage_refine`) discards a refine call that drifts too far from the raw transcript, visibly, falling back to raw |
+| Refine prompt | `refine-pt-v2` (default), tuned and measured against both benchmarks: cut refine's own WER regressions 7/30→2/30 (Common Voice) and 13/30→6/30 (FLEURS) vs. `refine-pt-v1`, still available by id |
 | Missing | linting, API, CI, frontend, logging, persistence |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
@@ -781,32 +782,105 @@ just a benchmark metric:
   better one). 6 new tests (`test_docx_writer.py::TestRefineRejected`) cover
   the document rendering.
 
-**Decided (2026-09-25): tune the refine prompt next, using this harness as
-the objective measure.** Whether refine's prompt should be made more
-conservative (less prone to rewording already-correct text) was left open
-above as a prompt-engineering decision distinct from the infrastructure this
-follow-up built. It's now approved as the next concrete task, not yet
-executed:
+### Third follow-up (2026-09-25): tuning the refine prompt, measured
 
-- `prompts.py`'s `PromptTemplate.id` already exists specifically for this —
-  each candidate wording becomes `refine-pt-v2`, `refine-pt-v3`, etc., and
-  `BenchmarkResult.refine_prompt_id` already records which one produced a
-  given run, so comparing prompt variants is a `compare` call away with no
-  new plumbing needed.
-- Candidate direction: make the prompt more conservative about rewording
-  text that's already correct (the failure mode both real runs measured —
-  1/30 improved vs. 7/30 worsened on Common Voice), while preserving what it
-  currently does right (collapsing repetition-loop hallucinations, fixing
-  garbled proper nouns from context — see "What the refine pass actually
-  fixes" in the README). Judge candidates against **both** the FLEURS and
-  Common Voice `quick` tiers, not just one, since they've already shown
-  different WER baselines.
-- Still an open limitation, not solved by this: neither dataset contains
-  genuinely spontaneous/disfluent speech (refine's actual target domain), so
-  a prompt tuned against these two tiers is tuned against "reads correctly
-  but could be reworded less," not against "actually has disfluencies to
-  remove." Worth remembering when interpreting a tuned prompt's benchmark
-  win as more than a proxy signal.
+**Diagnosis before writing anything:** rather than guess, `raw` vs `refined`
+text was inspected directly (not just the aggregate WER) on the 8 committed
+smoke clips. This found a consistent pattern behind v1's WER erosion — the
+model volunteers small, unforced rewrites of text that was already correct:
+`"como uma rota"` → `"como numa rota"` (no rule justifies this at all),
+`"das ondas na praia voltando ao mar"` → `"que volta ao mar"` (a stylistic
+rewrite of an already-grammatical sentence), and one actively **wrong**
+"agreement fix" — `"gorilas mais baratas"` → `"...baratos"` — that guessed
+the wrong noun for an ambiguous adjective and flipped a correct sentence
+into an incorrect one. None of this is hallucination or runaway generation
+(the other two follow-ups' failure modes); it's a system prompt ("professional
+reviewer") and rule set that never told the model *not* to polish text that
+didn't need it.
+
+**`refine-pt-v2`** (`prompts.py`) adds an explicit minimal-edit principle
+ahead of every other rule ("if it's already correct, leave it exactly as-is,
+even if you can imagine a more elegant phrasing — you are not improving the
+text, only fixing genuine errors"), a new rule explicitly forbidding
+synonym-substitution/restructuring of already-correct text, and narrows the
+concordância (agreement) rule to defer instead of guess when a term's
+referent is ambiguous. `Settings.refine_prompt_id` (default still
+`refine-pt-v1` until the comparison below is complete) makes this an A/B
+switch (`TRANSCRIPT_REFINE_PROMPT_ID=refine-pt-v2`) — `pipeline.py`,
+`eval/runner.py`, and `scripts/benchmark.py` were updated to resolve the
+prompt through it instead of a hardcoded import, exactly the plumbing
+decision #14 said was already in place.
+
+**Real, measured result — Common Voice, `quick` tier, n=30, identical clips
+(same seed) as the earlier v1 baseline:**
+
+| metric | v1 (baseline) | v2 (candidate) | delta |
+|---|---|---|---|
+| wer_refined (mean) | 0.1360 | 0.1013 | **−0.0346** (−25% relative) |
+| cer_refined (mean) | 0.0350 | 0.0229 | **−0.0120** (−34% relative) |
+| per-clip: improved / worsened / unchanged | 1 / 7 / 22 | 0 / 2 / 28 | regressions cut from 7 to 2 |
+
+`compare noisy-quick-1 noisy-v2-candidate` reports no regression past
+threshold on any metric, and every refine-stage metric moved in the better
+direction. `wer_raw`/`cer_raw`/`semdist_raw` are bit-for-bit unchanged, as
+expected (same ASR, same clips) — confirming the difference is attributable
+entirely to the prompt, not sampling noise.
+
+**The two remaining v2 regressions were inspected directly too, and are a
+genuinely different failure mode than v1's — not solved by "make it more
+conservative," and worth recording precisely rather than papering over:**
+1. `"Paulo e Joana estão trabalhando no projeto"` → `"...estão a trabalhar
+   no projeto"` — the model converted a Brazilian gerund construction
+   (`estar + gerúndio`) into the European periphrastic form (`estar a +
+   infinitivo`), directly against the explicit variant-preservation rule
+   (present unchanged since v1). A genuine, specific bug, not a vague
+   "over-editing" tendency — a good, concrete target for `refine-pt-v3`.
+2. A word-enumeration-style Common Voice prompt (`"impugnar, imunidade,
+   regalias, privilégios, outorgados"`, read as a list, not a sentence) was
+   "corrected" into fluent prose (`"...regalias e privilégios outorgados"`)
+   by the punctuation-naturalization rule (rule 2, present since v1)
+   reasonably — but wrongly — assuming a missing conjunction. This is a
+   collision between a legitimate rule and an unusual source-content style,
+   not a prompt-wording defect; not clear it's fixable without weakening
+   rule 2's real value elsewhere.
+
+**FLEURS, `quick` tier, n=30, identical clips (same seed) in both runs:**
+
+| metric | v1 (baseline) | v2 (candidate) | delta |
+|---|---|---|---|
+| wer_refined (mean) | 0.0489 | 0.0289 | **−0.0199** (−41% relative) |
+| cer_refined (mean) | 0.0210 | 0.0103 | **−0.0107** (−51% relative) |
+| per-clip: improved / worsened / unchanged | 1 / 13 / 16 | 2 / 6 / 22 | regressions cut from 13 to 6 |
+
+An even bigger relative win than Common Voice, and consistent with the
+hypothesis: FLEURS' clips are cleaner, so v1 had more perfect raw
+transcripts available to accidentally break (13/30, the highest regression
+rate measured anywhere in this project) — v2's minimal-edit principle stops
+most of that. One genuine measurement-noise data point surfaced here too,
+worth being honest about: `wer_raw` moved by +0.0014 between the two runs
+despite scoring the identical 30 clips, because mlx-whisper's own output for
+one clip (`fleurs_row00401`) differed very slightly between the two separate
+process runs — real ASR non-determinism, not a bug in the harness. It's
+about 15x smaller than the refine-stage improvement being measured, so it
+doesn't change the conclusion, but it's a real noise floor worth remembering
+before treating a small delta as meaningful in future comparisons.
+
+**Decision: `refine-pt-v2` is now the default** (`Settings.refine_prompt_id`).
+The improvement is large, consistent across both independent datasets, and
+directly explained by inspecting real examples rather than an unexplained
+metric wiggle. `refine-pt-v1` stays available by id for comparison/rollback.
+Two new v1-vs-v2 unit tests and 9 prompt-content tests (`test_prompts.py`)
+cover the template lookup, id stability, and that v2 didn't regress any of
+v1's existing safety rules (no-invention, register/variant preservation,
+`[?]` marker) while adding the minimal-edit principle.
+
+**Still an open limitation, not solved by this:** neither FLEURS nor Common
+Voice contains genuinely spontaneous/disfluent speech (refine's actual
+target domain), so this tuning optimizes "reads correctly but gets reworded
+less," not "actually has disfluencies to remove." A prompt that measures
+well here is a real, verified improvement on what these two benchmarks can
+see — not a substitute for eventually testing against real disfluent
+conversational audio.
 
 ---
 
@@ -1021,5 +1095,6 @@ is a hard gate requiring your confirmation.
 | 11 | **Regression threshold: 0.02 absolute** (2 percentage points of WER/CER/SemDist), built in Phase 6 with no objection raised. Configurable via `compare --threshold`; a metric missing from either compared run is skipped rather than flagged, so comparing runs of different tiers never fails spuriously. |
 | 12 | **Second benchmark dataset: Common Voice pt via `fsicoli/common_voice_17_0`** (CC0-1.0 community mirror), not the official `mozilla-foundation` org's repo — that one requires a loading script `datasets` 5.x can no longer run at all. Requested by the user explicitly to test whether refine's WER-erosion finding was an artifact of FLEURS' unusually clean audio (it wasn't — see Phase 6's second follow-up). |
 | 13 | **Refine quality guard: fail soft and visible, not silent, and not a hard abort.** A rejected refine attempt falls back to the raw transcript (reusing summarize/docx's existing fallback for a missing `refined_transcript`) but is never thrown away — kept in state, shown in the docx as a labeled appendix with the specific numbers that triggered rejection, so a reviewer can judge the guard's call. Thresholds (`refine_min_content_recall=0.5`, `refine_min/max_length_ratio=0.3/2.5`) are deliberately generous and explicitly documented as uncalibrated (no genuinely spontaneous-disfluent-speech dataset exists yet to calibrate against) — built to catch catastrophic failures (truncation, runaway generation), not to flag normal hesitation-removal shrinkage. |
-| 14 | **Refine prompt tuning approved as the next concrete task** (2026-09-25), using the Phase 6 eval harness (both FLEURS and Common Voice `quick` tiers) as the objective measure rather than judgement calls — see Phase 6's "Decided: tune the refine prompt next." Not yet executed. |
+| 14 | **Refine prompt tuning approved and executed** (2026-09-25), using the Phase 6 eval harness (both FLEURS and Common Voice `quick` tiers) as the objective measure rather than judgement calls — see Phase 6's third follow-up. |
 | 15 | **API: `refine` is a per-job, user-facing toggle; both transcripts are always returned when it runs** (2026-09-25). `refine=false` skips the stage entirely (raw only, faster); `refine=true` (default) returns `raw_transcript` **and** `refined_transcript` together, never just one — the API must not regress the guarantee the pipeline state and docx already provide today. See Phase 7. |
+| 16 | **`refine-pt-v2` is the default refine prompt** (2026-09-25), replacing v1. Measured, not assumed: cut WER regressions from 7/30→2/30 (Common Voice) and 13/30→6/30 (FLEURS), with wer_refined dropping 25-41% relative on both. `refine-pt-v1` stays available by id (`TRANSCRIPT_REFINE_PROMPT_ID=refine-pt-v1`) for comparison or rollback. |

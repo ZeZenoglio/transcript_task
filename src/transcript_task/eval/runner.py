@@ -19,7 +19,7 @@ from pathlib import Path
 
 from ..audio import AudioError, convert_to_target, is_already_target_format, probe
 from ..pipeline import new_transcript_id
-from ..prompts import REFINE_PROMPT_TEMPLATE
+from ..prompts import get_refine_template
 from ..refine import ChatModel, refine_transcript
 from ..settings import Settings
 from ..summarize import TranscriptSummary, docx_filename, summarize_transcript
@@ -133,7 +133,7 @@ def evaluate_clip(
         try:
             started = time.time()
             refined_transcript = refine_transcript(
-                raw_transcript, chat_model, REFINE_PROMPT_TEMPLATE, settings.llm_options
+                raw_transcript, chat_model, get_refine_template(settings.refine_prompt_id), settings.llm_options
             )
             result.refine_seconds = time.time() - started
             result.refine_completion_tokens = _completion_tokens(chat_model)

@@ -51,9 +51,88 @@ TRANSCRIÇÃO ORIGINAL:
 ---""",
 )
 
-# The template the pipeline uses today. Swapping this constant -- or, once
-# more variants exist, having Settings point at a template id instead --
-# changes the refine prompt everywhere without touching refine.py.
+# v2 (Phase 6 prompt-tuning follow-up): v1 measurably raised WER on both the
+# FLEURS and Common Voice benchmarks (Phase 6) -- refine made 7/30 real
+# clips worse and only 1/30 better. Manually inspecting raw-vs-refined pairs
+# (not just the aggregate metric) found a consistent pattern: v1 volunteers
+# small, unforced rewrites of text that was already correct -- "uma" ->
+# "numa" with no rule justifying it, "das ondas na praia voltando ao mar" ->
+# "que volta ao mar" (a stylistic rewrite of an already-grammatical
+# sentence), and one actively wrong "agreement fix" ("mais baratas" ->
+# "mais baratos") that guessed the wrong noun for an ambiguous adjective and
+# flipped a correct sentence into an incorrect one. None of these are
+# hallucination or the runaway-generation failure mode (Phase 6's other
+# follow-up) -- they're a system prompt ("professional reviewer") and rule
+# set that never told the model NOT to polish text that didn't need it.
+# v2 adds an explicit minimal-edit principle ahead of the other rules, and
+# narrows the concordância rule to stop guessing on ambiguous cases instead
+# of taking a side.
+REFINE_PT_V2 = PromptTemplate(
+    id="refine-pt-v2",
+    system=(
+        "És um revisor de transcrições em português cujo objetivo é fazer o MENOR número "
+        "de alterações possível -- corriges apenas o que estiver de facto errado, nunca "
+        "reescreves por estilo. Devolves sempre apenas o texto revisto, sem comentários "
+        "nem explicações."
+    ),
+    user_template="""Abaixo está a transcrição automática de um ficheiro de áudio em português.
+A transcrição foi gerada por um modelo de reconhecimento de fala e pode conter erros.
+
+A tua tarefa é preparar este texto para revisão humana. Regra de ouro, mais importante
+que todas as outras: se uma palavra, expressão ou frase já estiver correta e compreensível,
+mantém-na exatamente como está, mesmo que imagines uma forma alternativa, mais elegante ou
+mais formal de a escrever. Não estás a melhorar o texto -- estás apenas a corrigir erros
+genuínos. Na dúvida, NÃO alteres.
+
+Regras obrigatórias:
+
+1. CORRIGE apenas erros evidentes e inequívocos de reconhecimento de fala, ortografia e
+   acentuação. Corrige concordância apenas quando o erro for óbvio e a frase não permitir
+   outra leitura; se houver ambiguidade sobre a que palavra um termo se refere (ex.: a que
+   substantivo um adjetivo concorda), mantém a frase tal como foi transcrita em vez de
+   arriscar uma correção errada.
+2. PONTUA e divide em frases e parágrafos de forma natural e legível -- isto não conta como
+   reescrever, mas não aproveites para alterar palavras ao mesmo tempo.
+3. REMOVE apenas ruído de oralidade sem conteúdo (hesitações como "hum", "ãh", gaguejos e
+   repetições acidentais da mesma palavra). Mantém repetições que sejam intencionais ou enfáticas.
+4. NÃO substituas palavras por sinónimos, NÃO reordenes frases e NÃO reformules construções
+   que já estejam corretas, mesmo que o resultado te pareça mais fluido.
+5. NÃO inventes informação. NÃO resumas. NÃO omitas ideias. NÃO traduzas.
+6. PRESERVA o registo do falante (informal, coloquial, ou mesmo grosseiro). Não suavizes o tom.
+7. MANTÉM o português original do falante (europeu ou brasileiro). Não converjas para outra variante.
+8. Quando um trecho for inaudível ou ambíguo e não conseguires deduzir com confiança,
+   mantém a tua melhor hipótese seguida de [?].
+9. Se identificares mudança de interlocutor, inicia um novo parágrafo.
+
+Responde APENAS com o texto revisto.
+
+TRANSCRIÇÃO ORIGINAL:
+---
+{transcript}
+---""",
+)
+
+REFINE_PROMPT_TEMPLATES: dict[str, PromptTemplate] = {
+    "refine-pt-v1": REFINE_PT_V1,
+    "refine-pt-v2": REFINE_PT_V2,
+}
+
+
+def get_refine_template(prompt_id: str) -> PromptTemplate:
+    try:
+        return REFINE_PROMPT_TEMPLATES[prompt_id]
+    except KeyError:
+        raise ValueError(
+            f"No refine prompt with id {prompt_id!r}; "
+            f"available: {sorted(REFINE_PROMPT_TEMPLATES)}"
+        ) from None
+
+
+# The template the pipeline uses by default. `Settings.refine_prompt_id`
+# (env-overridable, see settings.py) is what actually selects the prompt at
+# runtime via get_refine_template() -- this constant is kept only as the
+# literal default value for that setting, not read directly by pipeline.py
+# or the eval harness any more.
 REFINE_PROMPT_TEMPLATE = REFINE_PT_V1
 
 

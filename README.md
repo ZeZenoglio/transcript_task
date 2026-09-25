@@ -468,6 +468,55 @@ bounded this time to 521.6 seconds (the `llm_num_predict` cap) and correctly
 discarded (26,398 characters of runaway text, `content_recall=0.273`) rather
 than shipped.
 
+### Tuning the refine prompt, measured against both benchmarks
+
+Diagnosing the WER erosion above meant inspecting actual `raw` vs `refined`
+text, not just the aggregate metric. The pattern: v1 volunteers small,
+unforced rewrites of text that's already correct — `"como uma rota"` →
+`"como numa rota"` (no rule justifies this), `"...voltando ao mar"` → `"que
+volta ao mar"` (a stylistic rewrite of an already-grammatical sentence), and
+one actively **wrong** "agreement fix" that guessed the wrong noun for an
+ambiguous adjective and flipped a correct sentence into an incorrect one.
+
+`refine-pt-v2` ([prompts.py](src/transcript_task/prompts.py)) adds an explicit
+minimal-edit principle ahead of every other rule — "if it's already correct,
+leave it exactly as-is, even if you can imagine a more elegant phrasing" —
+and narrows the agreement-fixing rule to defer instead of guess when a
+term's referent is ambiguous. `Settings.refine_prompt_id`
+(`TRANSCRIPT_REFINE_PROMPT_ID`) makes prompt variants an A/B switch, not a
+code change.
+
+**Measured on identical clips (same seed) against both benchmarks:**
+
+| | Common Voice (n=30) | FLEURS (n=30) |
+|---|---|---|
+| wer_refined: v1 → v2 | 0.1360 → 0.1013 (−25%) | 0.0489 → 0.0289 (−41%) |
+| regressions: v1 → v2 | 7/30 → 2/30 | 13/30 → 6/30 |
+
+`refine-pt-v2` is now the default. The improvement holds across two
+independently-sourced datasets, not just one run's noise — though a genuine
+noise floor did turn up in the process: `wer_raw` moved by +0.0014 between
+the two FLEURS runs on the identical 30 clips, because mlx-whisper's own
+output for one clip differed slightly between the two separate process
+runs. That's about 15x smaller than the refine-stage improvement, so it
+doesn't change the conclusion, but it's real ASR non-determinism worth
+knowing about before reading too much into a small delta elsewhere.
+
+The two regressions still remaining under v2 are a different, more specific
+failure mode, not "still too aggressive": one is the model converting a
+Brazilian gerund construction (`"estão trabalhando"`) into the European
+periphrastic form (`"estão a trabalhar"`) — a genuine bug against the
+explicit variant-preservation rule, and a concrete target for a future
+`refine-pt-v3`. The other is a word-enumeration-style Common Voice prompt
+("impugnar, imunidade, regalias...") that the punctuation-naturalization
+rule reasonably, but wrongly, "corrected" into fluent prose — a collision
+between a legitimate rule and unusual source content, not a wording defect.
+
+Neither FLEURS nor Common Voice contains genuinely spontaneous/disfluent
+speech, refine's actual target domain — this tuning is a real, verified
+improvement on what these two benchmarks can measure, not a substitute for
+eventually testing against real disfluent conversational audio.
+
 ## Audio handling
 
 Recordings commonly arrive in a mix of formats and sample rates — the normalize

@@ -39,7 +39,7 @@ from pathlib import Path
 from .asr import Transcriber, MlxWhisperTranscriber
 from .audio import AudioError, convert_to_target, is_already_target_format, probe
 from .docx_writer import human_duration, write_docx
-from .prompts import REFINE_PROMPT_TEMPLATE
+from .prompts import get_refine_template
 from .refine import ChatModel, OllamaChatModel, refine_transcript
 from .settings import PROJECT_ROOT, Settings
 from .text_compare import content_recall, length_ratio
@@ -302,7 +302,7 @@ def stage_refine(state: dict, settings: Settings, force: bool, model: ChatModel 
         started = time.time()
         try:
             text = refine_transcript(
-                item["raw_transcript"], model, REFINE_PROMPT_TEMPLATE, settings.llm_options
+                item["raw_transcript"], model, get_refine_template(settings.refine_prompt_id), settings.llm_options
             )
         except Exception as exc:  # noqa: BLE001
             log("refine", f"FAILED {key}: {exc}")

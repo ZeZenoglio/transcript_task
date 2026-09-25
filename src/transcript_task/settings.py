@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     # case to minutes, not the better part of an hour.
     llm_num_predict: int = 8192
 
+    # Which refine prompt variant to use (see prompts.py's
+    # REFINE_PROMPT_TEMPLATES / get_refine_template). Lets a benchmark run
+    # (scripts/benchmark.py) A/B two wordings via TRANSCRIPT_REFINE_PROMPT_ID
+    # without touching code -- the whole point of versioning prompts by id
+    # in the first place (see prompts.py's module docstring).
+    refine_prompt_id: str = "refine-pt-v2"
+
     @property
     def llm_options(self) -> dict:
         return {

@@ -56,7 +56,7 @@ from transcript_task.eval.mlflow_sink import (
 from transcript_task.eval.results import BenchmarkResult
 from transcript_task.eval.runner import evaluate_clip, peak_rss_mb
 from transcript_task.eval.tiers import DEFAULT_QUICK_N, DEFAULT_SEED, select_tier
-from transcript_task.prompts import REFINE_PROMPT_TEMPLATE, get_summarize_template
+from transcript_task.prompts import get_summarize_template
 from transcript_task.refine import OllamaChatModel
 from transcript_task.settings import PROJECT_ROOT, Settings
 
@@ -148,7 +148,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
         tag=args.tag,
         asr_model=settings.asr_model,
         llm_model=settings.llm_model,
-        refine_prompt_id=REFINE_PROMPT_TEMPLATE.id,
+        refine_prompt_id=settings.refine_prompt_id,
         summarize_prompt_id=get_summarize_template(settings.summary_language).id,
         summary_language=settings.summary_language,
         dataset=args.dataset,
