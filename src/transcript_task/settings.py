@@ -138,3 +138,26 @@ class Settings(BaseSettings):
             ".aac", ".wma", ".amr", ".mp4", ".webm", ".m4b", ".3gp",
         })
     )
+
+    # --- API (Phase 7) ---------------------------------------------------
+    # SQLite, not a server -- this is a single-machine local tool (same
+    # reasoning as the MLflow file-store decision in Phase 6). jobs.id is
+    # the same transcript_id used everywhere else (filenames, docx
+    # provenance, transcripts.json), not a fresh autoincrement.
+    api_db_path: Path = PROJECT_ROOT / "runs.db"
+
+    @property
+    def api_db_url(self) -> str:
+        return f"sqlite:///{self.api_db_path}"
+
+    # Each job gets its own isolated tmp/output subdirectory under here
+    # (api_jobs_dir/<job_id>/{tmp,output}) so concurrent jobs never share
+    # extract/normalize/transcripts.json paths the way CLI batch runs do.
+    api_jobs_dir: Path = PROJECT_ROOT / "data" / "api_jobs"
+
+    # Whisper + a 9B model concurrently on a 16GB machine will swap and
+    # crater (measured in Phase 6's benchmarks: peak RSS is already
+    # substantial with just one of each running at a time) -- 1 is the safe
+    # default; raise only on a machine known to have headroom.
+    api_concurrency: int = 1
+    api_max_upload_mb: int = 500

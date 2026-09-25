@@ -37,60 +37,15 @@ benchmarks/, not from MLflow, so CI never needs a tracking server reachable.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-import tempfile
-import time
 from pathlib import Path
 
-from transcript_task.asr import MlxWhisperTranscriber
 from transcript_task.eval.compare import compare_runs
-from transcript_task.eval.embeddings import SentenceTransformerEmbedder
-from transcript_task.eval.mlflow_sink import (
-    DEFAULT_ARTIFACTS_DIR,
-    load_local_result,
-    log_comparison,
-    log_run,
-    write_local_artifacts,
-)
+from transcript_task.eval.mlflow_sink import DEFAULT_ARTIFACTS_DIR, load_local_result, log_comparison
+from transcript_task.eval.orchestrator import DATASETS, DatasetNotFetched, run_benchmark_tier
 from transcript_task.eval.results import BenchmarkResult
-from transcript_task.eval.runner import evaluate_clip, peak_rss_mb
-from transcript_task.eval.tiers import DEFAULT_QUICK_N, DEFAULT_SEED, select_tier
-from transcript_task.prompts import get_summarize_template
-from transcript_task.refine import OllamaChatModel
-from transcript_task.settings import PROJECT_ROOT, Settings
-
-# Each entry is self-contained: full split (for quick/full tiers, fetched
-# separately) and the small committed smoke set (for CI/no-download runs).
-# expected_language_variant feeds evaluate_clip's summary-conformance check
-# (see summarize.TranscriptSummary.language_variant) -- None means "don't
-# assert," for a dataset whose clips don't share one known variant.
-DATASETS = {
-    "fleurs": {
-        "full_manifest": PROJECT_ROOT / "data" / "fleurs_pt" / "manifest.jsonl",
-        "full_audio_root": PROJECT_ROOT / "data" / "fleurs_pt",
-        "smoke_manifest": PROJECT_ROOT / "tests" / "fixtures" / "manifest.jsonl",
-        "smoke_audio_root": PROJECT_ROOT / "tests" / "fixtures",
-        "expected_language_variant": "pt-BR",
-        "fetch_hint": "scripts/fetch_dataset.py",
-    },
-    "common_voice": {
-        "full_manifest": PROJECT_ROOT / "data" / "common_voice_pt" / "manifest.jsonl",
-        "full_audio_root": PROJECT_ROOT / "data" / "common_voice_pt",
-        "smoke_manifest": PROJECT_ROOT / "tests" / "fixtures_noisy" / "manifest.jsonl",
-        "smoke_audio_root": PROJECT_ROOT / "tests" / "fixtures_noisy",
-        # Common Voice pt mixes pt-BR/pt-PT/unlabeled contributors -- no
-        # single expected variant to assert per clip.
-        "expected_language_variant": None,
-        "fetch_hint": "scripts/fetch_common_voice.py",
-    },
-}
-
-
-def _load_manifest(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+from transcript_task.eval.tiers import DEFAULT_QUICK_N, DEFAULT_SEED
+from transcript_task.settings import Settings
 
 
 def _log(msg: str) -> None:
@@ -99,86 +54,28 @@ def _log(msg: str) -> None:
 
 def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
     settings = Settings()
-    dataset_cfg = DATASETS[args.dataset]
+    _log(f"dataset={args.dataset} tier={args.tier} asr_model={settings.asr_model} "
+         f"llm_model={settings.llm_model} refine_prompt_id={settings.refine_prompt_id}")
 
-    full_manifest = _load_manifest(dataset_cfg["full_manifest"])
-    smoke_manifest = _load_manifest(dataset_cfg["smoke_manifest"])
-    if args.tier != "smoke" and not full_manifest:
-        sys.exit(
-            f"{dataset_cfg['full_manifest']} not found. Run {dataset_cfg['fetch_hint']} first, "
-            f"or use --tier smoke to run against the committed fixtures."
+    def on_clip(i: int, total: int, result) -> None:
+        status = result.error or (
+            f"wer_raw={result.wer_raw:.3f} wer_refined={result.wer_refined:.3f}"
+            if result.wer_refined is not None else f"wer_raw={result.wer_raw:.3f}"
         )
+        _log(f"[{i}/{total}] {result.clip_id}: {status}")
 
-    clips = select_tier(full_manifest, smoke_manifest, args.tier, n=args.n, seed=args.seed)
-    audio_root = dataset_cfg["smoke_audio_root"] if args.tier == "smoke" else dataset_cfg["full_audio_root"]
-    _log(f"dataset={args.dataset} tier={args.tier} n={len(clips)} "
-         f"asr_model={settings.asr_model} llm_model={settings.llm_model}")
-
-    transcriber = MlxWhisperTranscriber(settings.asr_model)
-    chat_model = OllamaChatModel(settings.llm_model)
-    embedder = None if args.no_semdist else SentenceTransformerEmbedder()
-
-    clip_results = []
-    with tempfile.TemporaryDirectory(prefix="benchmark_normalized_") as tmp:
-        tmp_dir = Path(tmp)
-        for i, clip in enumerate(clips, start=1):
-            started = time.time()
-            result = evaluate_clip(
-                clip, audio_root, settings, transcriber, chat_model, embedder, tmp_dir,
-                expected_language_variant=dataset_cfg["expected_language_variant"],
-                skip_refine=args.skip_refine,
-            )
-            clip_results.append(result)
-            status = result.error or (
-                f"wer_raw={result.wer_raw:.3f} wer_refined={result.wer_refined:.3f}"
-                if result.wer_refined is not None else f"wer_raw={result.wer_raw:.3f}"
-            )
-            _log(f"[{i}/{len(clips)}] {result.clip_id} ({time.time() - started:.1f}s): {status}")
-
-    model_load_seconds = {}
-    if clip_results:
-        if clip_results[0].asr_seconds is not None:
-            model_load_seconds["asr_first_call"] = clip_results[0].asr_seconds
-        if clip_results[0].refine_seconds is not None:
-            model_load_seconds["llm_first_call"] = clip_results[0].refine_seconds
-
-    benchmark_result = BenchmarkResult(
-        tier=args.tier,
-        seed=args.seed if args.tier == "quick" else None,
-        tag=args.tag,
-        asr_model=settings.asr_model,
-        llm_model=settings.llm_model,
-        refine_prompt_id=settings.refine_prompt_id,
-        summarize_prompt_id=get_summarize_template(settings.summary_language).id,
-        summary_language=settings.summary_language,
-        dataset=args.dataset,
-        clips=clip_results,
-        settings_snapshot={
-            "llm_temperature": settings.llm_temperature,
-            "llm_num_ctx": settings.llm_num_ctx,
-            "anonymize_metadata": settings.anonymize_metadata,
-            "target_codec": settings.target_codec,
-            "skip_refine": args.skip_refine,
-        },
-        peak_rss_mb=peak_rss_mb(),
-        model_load_seconds=model_load_seconds,
-    )
-
-    interpretation_model = None if args.no_interpretation else chat_model
-    if args.no_mlflow:
-        from transcript_task.eval.interpretation import write_interpretation
-
-        interpretation_text = (
-            write_interpretation(benchmark_result, interpretation_model)
-            if interpretation_model is not None else None
+    try:
+        benchmark_result = run_benchmark_tier(
+            settings, dataset=args.dataset, tier=args.tier, tag=args.tag,
+            n=args.n, seed=args.seed, skip_refine=args.skip_refine,
+            no_semdist=args.no_semdist, no_interpretation=args.no_interpretation,
+            use_mlflow=not args.no_mlflow, on_clip=on_clip,
         )
-        write_local_artifacts(
-            benchmark_result, Path(DEFAULT_ARTIFACTS_DIR), interpretation=interpretation_text
-        )
-    else:
-        run_id = log_run(benchmark_result, interpretation_model=interpretation_model)
-        _log(f"logged to mlflow: run_id={run_id} (mlflow ui --backend-store-uri file:mlruns)")
+    except DatasetNotFetched as exc:
+        sys.exit(str(exc))
 
+    if not args.no_mlflow:
+        _log("logged to mlflow (mlflow ui --backend-store-uri file:mlruns)")
     _log(f"done: {benchmark_result.n_clips} clips, {benchmark_result.n_errors} errors, "
          f"results in {DEFAULT_ARTIFACTS_DIR}/{args.tag}/")
     return benchmark_result

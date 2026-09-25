@@ -216,6 +216,65 @@ run `--only refine summarize docx --force`.
 `main.py` is a thin entry point; `uv run python -m transcript_task.pipeline --input ...`
 does exactly the same thing.
 
+## API
+
+```bash
+uv run uvicorn transcript_task.api.app:app --reload
+```
+
+Transcription is minutes-long, so nothing blocks: `POST /v1/jobs` returns `202`
+with a `job_id` immediately, and the actual work runs in a small thread pool
+(`Settings.api_concurrency`, default 1 — Whisper and a 9B model at once is
+already the realistic ceiling on a 16GB machine). Poll `GET /v1/jobs/{id}` for
+status, then `GET /v1/jobs/{id}/result` or `/docx`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | liveness + ffmpeg/Ollama/model reachability |
+| `POST /v1/jobs` | upload audio (multipart) + `refine: bool` → `202` |
+| `GET /v1/jobs` · `GET /v1/jobs/{id}` | list / status + current stage |
+| `GET /v1/jobs/{id}/result` · `/docx` | transcript JSON · generated document |
+| `GET /v1/jobs/{id}/timings` | per-stage seconds |
+| `DELETE /v1/jobs/{id}` | cancel (if still queued) or purge |
+| `GET /v1/config` · `PATCH /v1/config` | read / live-patch models, prompts, options |
+| `GET /v1/models` | what's actually available in Ollama right now |
+| `POST /v1/benchmark` · `GET /v1/benchmark/{tag}` · `/results` | trigger an eval run, fetch results |
+
+**The `refine` toggle always gives you both versions when it runs.** `refine=false`
+skips the stage entirely (raw transcript only, faster, no LLM cost). `refine=true`
+(the default) returns **both** `raw_transcript` and `refined_transcript` in the
+result, never just the refined one — this isn't new behavior invented for the
+API, it's the same guarantee the pipeline's state and every `.docx` already
+provide (see "What the refine pass actually fixes" above); the API's job is to
+not regress it by only exposing one field where the pipeline tracks two. If the
+refine-quality guard rejects a result, the response says so explicitly
+(`refine_rejected: {...}`) instead of looking identical to `refine=false`.
+
+**Persistence and config:** SQLite (`runs.db`) — `jobs.id` is the same
+`transcript_id` used everywhere else (filenames, docx provenance), not a
+separate autoincrement. `PATCH /v1/config` validates `refine_prompt_id` and
+`llm_model`/`asr_model` (against `ollama.list()`) before accepting a change,
+and versions config **per job** rather than rejecting changes while jobs are
+in flight — each job's own isolated settings copy means an in-flight job is
+never affected by a later config change, so there's nothing to protect by
+blocking one.
+
+**DELETE is honest about its limits.** A still-queued job cancels outright;
+a currently-running one returns `409` rather than pretending to interrupt
+it — Python threads running the ASR/LLM calls can't be preempted and have no
+cancellation hook, so silently "succeeding" would misrepresent what happened.
+
+**Logging:** `structlog`, JSON to `data/logs/api.jsonl` and readable text to
+the console from the same log calls; a request-id middleware binds an id
+into every log line for one request, echoed back as `X-Request-ID`.
+Transcript content is never logged at INFO — only metadata (job id, stage,
+duration).
+
+Tested with FastAPI's `TestClient` and one genuinely-async `httpx.AsyncClient`
+test (fakes for ASR/LLM, real SQLite, real background threads — 33 tests
+covering the happy path, validation, config, concurrency, and cancellation),
+plus one real end-to-end integration test with real mlx-whisper and Ollama.
+
 ## Project layout
 
 ```
@@ -232,6 +291,8 @@ src/transcript_task/
   docx_writer.py   # Word document generation
   pipeline.py      # stage orchestration + CLI, transcript_id assignment
   eval/            # evaluation harness (Phase 6) — see below
+  api/             # FastAPI service (Phase 7): app.py, db.py, job_runner.py,
+                   # worker.py, schemas.py, logging_config.py — see above
 main.py            # entry point
 scripts/           # fetch_dataset.py, fetch_common_voice.py, build_fixtures.py, benchmark.py
 tests/             # pytest suite — see the Testing section below

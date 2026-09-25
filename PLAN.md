@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–6 complete (2026-09-24, on `dev`). Phases 7-12 pending. All open
+**Status:** Phases 0–7 complete (2026-09-25, on `dev`). Phases 8-12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -20,12 +20,13 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
-| Tests | 208 unit tests (`uv run pytest`) + 2 integration tests against real Ollama/mlx-whisper |
+| Tests | 242 unit tests (`uv run pytest`) + 3 integration tests against real Ollama/mlx-whisper |
 | Benchmark data | FLEURS pt_br (919 clips, `scripts/fetch_dataset.py`) + Common Voice pt (9,467 clips, `scripts/fetch_common_voice.py`); diversified fixtures committed under `tests/fixtures/` and `tests/fixtures_noisy/` |
 | Eval harness | `scripts/benchmark.py run/compare --dataset {fleurs,common_voice}` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
 | Refine safety net | production runtime guard (`text_compare.py` + `pipeline.stage_refine`) discards a refine call that drifts too far from the raw transcript, visibly, falling back to raw |
 | Refine prompt | `refine-pt-v2` (default), tuned and measured against both benchmarks: cut refine's own WER regressions 7/30→2/30 (Common Voice) and 13/30→6/30 (FLEURS) vs. `refine-pt-v1`, still available by id |
-| Missing | linting, API, CI, frontend, logging, persistence |
+| API | FastAPI (`transcript_task.api.app`) — jobs (async, per-job `refine` toggle, always both transcripts when refine runs), config (live-patchable, validated, versioned per job), models, benchmark endpoints; SQLite (`runs.db`) persistence; `structlog` JSON+console logging |
+| Missing | linting, CI, frontend |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
 As of Phase 2, the code is a proper `src/` package (`src/transcript_task/`) with a
@@ -884,7 +885,7 @@ conversational audio.
 
 ---
 
-## Phase 7 — FastAPI service, persistence, logging
+## Phase 7 — FastAPI service, persistence, logging ✅ done
 
 **Async model:** transcription is minutes-long, so endpoints must not block. Submit a
 job → `202` + `job_id` → poll status / fetch result. Background execution via a worker
@@ -944,6 +945,98 @@ what it contains.
 **Tests:** `httpx.AsyncClient` against the app with fake ASR/LLM — happy path, bad
 upload type, oversized file, unknown job, config validation, concurrency cap,
 cancellation. Plus one real end-to-end integration test.
+
+### Implementation notes (completed 2026-09-25, on `dev`)
+
+Built as `src/transcript_task/api/` (`app.py`, `db.py`, `job_runner.py`, `worker.py`,
+`schemas.py`, `logging_config.py`), plus a shared `eval/orchestrator.py` extracted
+from `scripts/benchmark.py` so the CLI and `/v1/benchmark` don't duplicate the
+"run a tier end to end" logic. Every endpoint in the plan's table is real and
+tested, not stubbed:
+
+- **Job orchestration reuses `pipeline.py`'s stage functions directly**
+  (`job_runner.run_job` calls `stage_normalize`/`stage_transcribe`/`stage_refine`/
+  `stage_summarize`/`stage_docx` against a fresh single-item state dict), rather
+  than duplicating their logic the way `eval/runner.py` does for a genuinely
+  different reason (scoring against ground truth). An API job *is* a CLI run on
+  one file; the only real difference is each job gets its own isolated
+  `tmp`/`output` directories (`api_jobs_dir/<job_id>/`) via a per-job `Settings`
+  copy, so concurrent jobs never collide the way sharing the CLI's single
+  `transcripts.json` would.
+- **Worker: a `ThreadPoolExecutor`, not a task queue.** `Settings.api_concurrency`
+  (default 1) caps it — matches the plan's reasoning exactly (Whisper + a 9B
+  model at once is already the realistic ceiling on a 16GB machine). Verified
+  for real, not just asserted: a test with a tracking fake transcriber confirms
+  peak concurrent execution never exceeds 1 across two simultaneously-submitted
+  jobs.
+- **Config: versioned per job, not rejected while jobs are in flight** — the plan
+  offered both options; per-job versioning was picked because a per-job `Settings`
+  copy already made it free (see above), and it's strictly more useful than
+  blocking a legitimate config change for however long a job takes. `PATCH
+  /v1/config` validates `refine_prompt_id` against `get_refine_template()` and
+  `llm_model`/`asr_model` against `ollama.list()`, records an append-only
+  `ConfigHistory` row (diff *and* full snapshot, so a restart reconstructs
+  current config from the latest row without replaying history), and the
+  change is visible to new jobs immediately.
+- **DELETE is honest about what it can't do.** A still-queued job can be
+  canceled outright (`Future.cancel()`); a currently-running one returns `409`
+  rather than pretending to interrupt it — Python threads aren't preemptible
+  and the ASR/LLM calls have no cancellation hook, so silently "succeeding"
+  at canceling a running job would be a lie. Verified with a deterministic
+  test (a blocking fake transcriber gated by a `threading.Event`), not a timing
+  guess.
+- **`jobs.id` is the `transcript_id`**, exactly as specified — no separate
+  autoincrement anywhere.
+
+**A real, load-bearing constraint discovered while wiring this up, not just a
+test artifact:** `pipeline.py`'s stage functions store paths via
+`.relative_to(PROJECT_ROOT)` (used to keep `transcripts.json`/docx paths
+portable across machines). That means job/tmp directories for the API
+**must** live under `PROJECT_ROOT` — confirmed the hard way when a first draft
+of the test fixtures used pytest's own `tmp_path` (outside the repo) and hit
+`ValueError: ... is not in the subpath of ...` immediately. `Settings.api_jobs_dir`
+defaults to `PROJECT_ROOT / "data" / "api_jobs"` for exactly this reason; tests
+mirror it (`PROJECT_ROOT / "data" / "test_api_jobs" / <unique>`) rather than
+using `tmp_path` directly.
+
+**A third, found by checking the actual build artifact rather than trusting
+that tests passing meant the package was correctly assembled:** `api/` had
+no `__init__.py` (Python's implicit namespace packages made every import
+and every test pass anyway, silently). `pyproject.toml`'s hatchling build
+only picks up explicit packages, so a real `uv build --wheel` produced a
+wheel with the whole `api/` directory **missing** — verified by building the
+wheel and checking its contents directly, not assumed from tests being
+green. Fixed by adding the missing `__init__.py`; re-verified the wheel
+contains all six `api/` modules afterward.
+
+**Two real bugs found by the test suite, both fixed:**
+1. `POST /v1/benchmark`/`create_benchmark` validated the response model
+   (`BenchmarkRunOut.model_validate(run, ...)`) *after* its DB session block
+   had already closed — a `DetachedInstanceError` on every call, caught
+   immediately by the first benchmark test written. Fixed by building the
+   response inside the session block, before it closes.
+2. The eval harness's SemDist metric was silently loading `sentence-transformers`
+   (and its sklearn/joblib/onnx dependency chain) inside a background thread
+   during what should have been fast, offline API tests — `run_benchmark_tier`
+   had no way to skip it. Fixed by adding a `semdist: bool = True` field to
+   `POST /v1/benchmark`'s request schema, threaded through to
+   `run_benchmark_tier(no_semdist=...)` — a real API capability gap this
+   surfaced, not just a test-speed workaround: a caller who only wants
+   WER/CER (no embedding-model load) now has a way to ask for that.
+
+**Verified for real, beyond the test suite:** started the actual server with
+`uv run uvicorn transcript_task.api.app:app` and hit `/health`, `/v1/config`,
+`/v1/models` with `curl` against the real, running Ollama — confirmed the
+dual JSON-file + console structlog output, and that `runs.db`/`data/logs/`
+land in the right (gitignored) places. Ran the full real end-to-end
+integration test (`test_real_job_end_to_end`, `-m integration`): a committed
+FLEURS fixture goes in through the actual HTTP upload endpoint, comes back out
+transcribed by real mlx-whisper and refined/summarized by real Ollama, as a
+downloadable real `.docx` — 29.7s wall clock, matching ground truth.
+
+**Exit:** all of the above, plus 33 new fast unit tests (fakes for ASR/LLM,
+real SQLite, real background threads) and the one real integration test — 242
+unit tests total, 3 integration tests total.
 
 ---
 
@@ -1098,3 +1191,6 @@ is a hard gate requiring your confirmation.
 | 14 | **Refine prompt tuning approved and executed** (2026-09-25), using the Phase 6 eval harness (both FLEURS and Common Voice `quick` tiers) as the objective measure rather than judgement calls — see Phase 6's third follow-up. |
 | 15 | **API: `refine` is a per-job, user-facing toggle; both transcripts are always returned when it runs** (2026-09-25). `refine=false` skips the stage entirely (raw only, faster); `refine=true` (default) returns `raw_transcript` **and** `refined_transcript` together, never just one — the API must not regress the guarantee the pipeline state and docx already provide today. See Phase 7. |
 | 16 | **`refine-pt-v2` is the default refine prompt** (2026-09-25), replacing v1. Measured, not assumed: cut WER regressions from 7/30→2/30 (Common Voice) and 13/30→6/30 (FLEURS), with wer_refined dropping 25-41% relative on both. `refine-pt-v1` stays available by id (`TRANSCRIPT_REFINE_PROMPT_ID=refine-pt-v1`) for comparison or rollback. |
+| 17 | **Config mutation: versioned per job, not rejected while jobs are in flight** (2026-09-25, Phase 7). The plan offered both; per-job versioning was free once every job got its own `Settings` copy anyway (needed regardless, for isolated tmp/output dirs), and it's strictly more useful than blocking a legitimate config change for however long a job takes. |
+| 18 | **DELETE on a running job returns 409, not a fake success** (2026-09-25, Phase 7). Python threads running the ASR/LLM calls can't be preempted and have no cancellation hook; silently "succeeding" at canceling a running job would misrepresent what actually happened. A still-queued job can be canceled outright. |
+| 19 | **API job/tmp directories must live under `PROJECT_ROOT`** (2026-09-25, Phase 7) — not a preference, a hard constraint: `pipeline.py`'s stage functions store paths via `.relative_to(PROJECT_ROOT)`. `Settings.api_jobs_dir` defaults to `PROJECT_ROOT / "data" / "api_jobs"` accordingly. |
