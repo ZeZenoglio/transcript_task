@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–8 complete (2026-09-25, on `dev`). Phases 9-12 pending. All open
+**Status:** Phases 0–9 complete (2026-09-25, on `dev`). Phases 10-12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -20,13 +20,14 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
-| Tests | 245 unit tests (`uv run pytest`) + 3 integration tests against real Ollama/mlx-whisper |
+| Tests | 284 unit tests (`uv run pytest`) + 3 integration tests against real Ollama/mlx-whisper |
 | Benchmark data | FLEURS pt_br (919 clips, `scripts/fetch_dataset.py`) + Common Voice pt (9,467 clips, `scripts/fetch_common_voice.py`); diversified fixtures committed under `tests/fixtures/` and `tests/fixtures_noisy/` |
 | Eval harness | `scripts/benchmark.py run/compare --dataset {fleurs,common_voice}` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
 | Refine safety net | production runtime guard (`text_compare.py` + `pipeline.stage_refine`) discards a refine call that drifts too far from the raw transcript, visibly, falling back to raw |
 | Refine prompt | `refine-pt-v2` (default), tuned and measured against both benchmarks: cut refine's own WER regressions 7/30→2/30 (Common Voice) and 13/30→6/30 (FLEURS) vs. `refine-pt-v1`, still available by id |
 | API | FastAPI (`transcript_task.api.app`) — jobs (async, per-job `refine` toggle, always both transcripts when refine runs), config (live-patchable, validated, versioned per job), models, benchmark endpoints; SQLite (`runs.db`) persistence; `structlog` JSON+console logging; RFC 7807 errors, full OpenAPI docs at `/docs` |
-| Missing | linting, CI, frontend |
+| Frontend | `frontend/app.py` — single-screen Streamlit demo (upload → poll → result → reset), polls the API only, never imports the pipeline |
+| Missing | linting, CI |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
 As of Phase 2, the code is a proper `src/` package (`src/transcript_task/`) with a
@@ -1105,7 +1106,7 @@ new one).
 
 ---
 
-## Phase 9 — Streamlit demo
+## Phase 9 — Streamlit demo ✅ done
 
 Single-screen demo: upload → run → result → reset.
 - Start from a clean community template; keep it minimal and themed via
@@ -1119,6 +1120,70 @@ Single-screen demo: upload → run → result → reset.
 **Tests:** logic extracted into pure helpers and unit-tested; a smoke test that the app
 imports and renders headlessly. (Streamlit UIs resist deep automated testing — I'd keep
 coverage honest and shallow here rather than fake it.)
+
+### Implementation notes (completed 2026-09-25, on `dev`)
+
+Built as `frontend/` (outside `src/transcript_task/` deliberately -- this is an app
+you run, not library code, same reasoning as `scripts/`): `app.py` (the Streamlit
+UI), `api_client.py` (a thin `httpx` wrapper, the only thing that talks to the
+API), `helpers.py` (every piece of non-Streamlit logic: stage-to-progress mapping,
+raw/refined selection, the sensitivity banner rule, duration formatting).
+
+- **"Clean community template" honestly wasn't literally forked** — this
+  environment has no way to fetch one. Built a small, idiomatic single-file app
+  directly instead (upload → primary action → poll → result → reset), which serves
+  the plan's actual intent ("keep it minimal") the same way; recorded here rather
+  than silently presented as if a template had been used.
+- **Never imports `transcript_task.pipeline`** — `api_client.py` is the only path
+  to the backend, over HTTP, so the demo genuinely exercises the Phase 7/8 service
+  rather than being a second way to invoke the library.
+- **Sensitivity banner matches the plan's literal wording** ("when the summary
+  flags `high`"), not `docx_writer.py`'s own banner rule (Phase 3), which also
+  covers `medium`. Deliberate, and called out in `helpers.py`'s docstring rather
+  than silently drifting from the spec.
+- **Polling** is a plain `time.sleep(1.5); st.rerun()` loop while status isn't
+  terminal — no extra polling/autorefresh package added, in keeping with "keep it
+  minimal."
+- **API errors never reach the user as a traceback:** every `ApiClient` call
+  extracts a readable message from the API's RFC 7807 `Problem` body (Phase 8)
+  and raises `ApiError`; `app.py`'s `_api_call` wrapper logs the real exception to
+  `data/logs/streamlit.log` and shows only the short message via `st.error`.
+
+**A real bug found and fixed while testing this, not a synthetic edge case:**
+the sidebar's default API URL (`http://localhost:8000`) happened to collide with
+an unrelated local project's own server on this development machine. That server
+answered with a `200` and a JSON body — just not one shaped like this API's
+`/health` response — and the sidebar crashed with a bare `KeyError: 'asr_model'`
+instead of failing gracefully. The API layer's own error handling (RFC 7807
+extraction) never even triggered, because from `httpx`'s perspective the request
+had *succeeded*; the bug was trusting an unfamiliar 200 response's shape.
+Fixed by validating the response shape before reading from it, with a warning
+("doesn't look like the transcript_task API — check the URL") instead of either
+a crash or a silent misread. This is exactly the kind of gap real-data testing
+was meant to catch: nothing about the code review would have surfaced "what if
+we hit a stranger's server," only actually running it against this machine's
+real network state did.
+
+Also caught, for the same reason, a test-fragility issue: the first version of
+the headless smoke test relied on the *absence* of anything at
+`localhost:8000` to exercise the "unreachable" path — true on most machines,
+false on this one. Fixed by pinning tests to an explicit high port
+(`127.0.0.1:59999`) instead of relying on ambient machine state, and adding a
+dedicated regression test for the KeyError bug itself (a mocked `200` with an
+unrelated JSON shape).
+
+**Tests:** 25 pure-helper tests, 9 `api_client` tests (RFC 7807 extraction,
+multipart submission shape, unreachable-host handling — all against real
+`httpx.Response` objects, no mock transport needed), 5 headless `AppTest` smoke
+tests (renders without raising, upload screen is the default view, the
+Transcribe button is disabled with no file selected, the sidebar degrades
+instead of crashing on both an unreachable host and an unexpected-but-successful
+response). Verified beyond the test suite too: booted the real API and pointed
+a real `AppTest` run at it directly — confirmed the sidebar's "API reachable",
+correct model names, and the audio-extension list all come through the real
+`/health`/`/v1/config` calls, not fakes; separately ran `streamlit run
+frontend/app.py` as an actual server process and confirmed it serves `200`.
+284 unit tests total project-wide.
 
 ---
 
@@ -1247,3 +1312,5 @@ is a hard gate requiring your confirmation.
 | 17 | **Config mutation: versioned per job, not rejected while jobs are in flight** (2026-09-25, Phase 7). The plan offered both; per-job versioning was free once every job got its own `Settings` copy anyway (needed regardless, for isolated tmp/output dirs), and it's strictly more useful than blocking a legitimate config change for however long a job takes. |
 | 18 | **DELETE on a running job returns 409, not a fake success** (2026-09-25, Phase 7). Python threads running the ASR/LLM calls can't be preempted and have no cancellation hook; silently "succeeding" at canceling a running job would misrepresent what actually happened. A still-queued job can be canceled outright. |
 | 19 | **API job/tmp directories must live under `PROJECT_ROOT`** (2026-09-25, Phase 7) — not a preference, a hard constraint: `pipeline.py`'s stage functions store paths via `.relative_to(PROJECT_ROOT)`. `Settings.api_jobs_dir` defaults to `PROJECT_ROOT / "data" / "api_jobs"` accordingly. |
+| 20 | **Frontend written from scratch, not forked from a community template** (2026-09-25, Phase 9) — this environment has no way to fetch an external template; a small, idiomatic single-file app serves the plan's actual intent ("keep it minimal") equivalently. Recorded rather than silently presented as if a template had been used. |
+| 21 | **Sensitivity banner shown only for `high`, matching the plan's literal wording** (2026-09-25, Phase 9), not `docx_writer.py`'s own banner rule (Phase 3), which also covers `medium`. A deliberate, narrower scope for the demo, not a regression. |

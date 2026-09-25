@@ -281,6 +281,40 @@ test (fakes for ASR/LLM, real SQLite, real background threads — 33 tests
 covering the happy path, validation, config, concurrency, and cancellation),
 plus one real end-to-end integration test with real mlx-whisper and Ollama.
 
+## Frontend
+
+```bash
+uv run uvicorn transcript_task.api.app:app &   # the API must already be running
+uv run streamlit run frontend/app.py
+```
+
+A single-screen demo (upload → live stage progress → result → "Start over") that
+talks to the API over HTTP the whole time — `frontend/api_client.py` is the only
+thing that calls it, and `frontend/app.py` never imports `transcript_task.pipeline`.
+This is a demo of the *service*, not a second way to invoke the library.
+
+Once a job finishes: the generated title and description, a raw/refined toggle,
+a `.docx` download button, and a sensitivity banner if the summary flagged the
+recording as `high` sensitivity. Allowed file types come from the API's own
+`GET /v1/config` (`audio_extensions`), not a hardcoded list here.
+
+**A real bug found while testing this:** the sidebar's default API URL happened
+to collide with an unrelated local project's own server running on the same
+port on the development machine. It answered with a `200` and *some* JSON body
+— just not this API's — and the sidebar crashed with a bare `KeyError` instead
+of failing gracefully. Fixed by validating the response shape before reading
+from it. Nothing about reading the code would have caught this; only actually
+running it against this machine's real network state did.
+
+Logic lives in `frontend/helpers.py` (pure functions: stage-to-progress mapping,
+raw/refined selection, the sensitivity rule, duration formatting) so it's
+unit-testable without Streamlit's runtime — Streamlit UIs resist deep automated
+testing, so coverage here stays honestly shallow rather than faked: 25 helper
+tests, 9 `api_client` tests, and 5 headless `streamlit.testing.v1.AppTest` smoke
+tests (renders without raising, the Transcribe button is disabled with no file
+selected, the sidebar degrades instead of crashing on an unreachable host or an
+unexpected response shape).
+
 ## Project layout
 
 ```
@@ -300,6 +334,8 @@ src/transcript_task/
   api/             # FastAPI service (Phase 7): app.py, db.py, job_runner.py,
                    # worker.py, schemas.py, logging_config.py — see above
 main.py            # entry point
+frontend/          # Streamlit demo (Phase 9): app.py, api_client.py, helpers.py — see above
+.streamlit/        # theme (config.toml) for the frontend
 scripts/           # fetch_dataset.py, fetch_common_voice.py, build_fixtures.py, benchmark.py
 tests/             # pytest suite — see the Testing section below
 ```

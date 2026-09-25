@@ -1,0 +1,13 @@
+# Minimal theming for the Phase 9 demo -- see frontend/app.py.
+[theme]
+primaryColor = "#4A6FA5"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F4F7"
+textColor = "#1A1A1A"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
