@@ -5,9 +5,12 @@ never need to load the real (large, slow-to-load) embedding model.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 
 class Embedder(Protocol):
@@ -27,7 +30,7 @@ class SentenceTransformerEmbedder:
     MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
     def __init__(self) -> None:
-        self._model = None
+        self._model: SentenceTransformer | None = None
 
     def _get_model(self):
         if self._model is None:

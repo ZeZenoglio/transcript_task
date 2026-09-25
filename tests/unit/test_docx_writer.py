@@ -56,15 +56,17 @@ class TestTruncated:
 class TestWriteDocxWithSummary:
     def test_long_description_does_not_raise(self, tmp_path):
         assert len(LONG_DESCRIPTION) > 255
-        item = _base_item(summary={
-            "title": "Título de teste",
-            "description": LONG_DESCRIPTION,
-            "topics": ["a", "b", "c"],
-            "speakers_detected": 2,
-            "language_variant": "pt-PT",
-            "sensitivity": "low",
-            "confidence": "high",
-        })
+        item = _base_item(
+            summary={
+                "title": "Título de teste",
+                "description": LONG_DESCRIPTION,
+                "topics": ["a", "b", "c"],
+                "speakers_detected": 2,
+                "language_variant": "pt-PT",
+                "sensitivity": "low",
+                "confidence": "high",
+            }
+        )
         out = tmp_path / "out.docx"
 
         write_docx("recording.m4a", item, out, Settings())
@@ -76,30 +78,34 @@ class TestWriteDocxWithSummary:
         assert LONG_DESCRIPTION.strip() in "\n".join(p.text for p in doc.paragraphs)
 
     def test_sensitivity_banner_present_for_high_sensitivity(self, tmp_path):
-        item = _base_item(summary={
-            "title": "Assunto sensível",
-            "description": "Descrição curta.",
-            "topics": ["privado"],
-            "speakers_detected": 1,
-            "language_variant": "pt-PT",
-            "sensitivity": "high",
-            "confidence": "high",
-        })
+        item = _base_item(
+            summary={
+                "title": "Assunto sensível",
+                "description": "Descrição curta.",
+                "topics": ["privado"],
+                "speakers_detected": 1,
+                "language_variant": "pt-PT",
+                "sensitivity": "high",
+                "confidence": "high",
+            }
+        )
         out = tmp_path / "out.docx"
         write_docx("recording.m4a", item, out, Settings())
         text = "\n".join(p.text for p in Document(str(out)).paragraphs)
         assert "sensível" in text.lower() or "⚠" in text
 
     def test_no_banner_for_low_sensitivity(self, tmp_path):
-        item = _base_item(summary={
-            "title": "Assunto normal",
-            "description": "Descrição curta.",
-            "topics": ["rotina"],
-            "speakers_detected": 1,
-            "language_variant": "pt-PT",
-            "sensitivity": "low",
-            "confidence": "high",
-        })
+        item = _base_item(
+            summary={
+                "title": "Assunto normal",
+                "description": "Descrição curta.",
+                "topics": ["rotina"],
+                "speakers_detected": 1,
+                "language_variant": "pt-PT",
+                "sensitivity": "low",
+                "confidence": "high",
+            }
+        )
         out = tmp_path / "out.docx"
         write_docx("recording.m4a", item, out, Settings())
         text = "\n".join(p.text for p in Document(str(out)).paragraphs)

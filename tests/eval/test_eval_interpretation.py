@@ -1,12 +1,19 @@
 from fakes import FakeChatModel
+
 from transcript_task.eval.interpretation import write_interpretation
 from transcript_task.eval.results import BenchmarkResult, ClipResult
 
 
 def _result() -> BenchmarkResult:
     return BenchmarkResult(
-        tier="quick", seed=1, tag="t", asr_model="m", llm_model="l",
-        refine_prompt_id="r", summarize_prompt_id="s", summary_language="pt",
+        tier="quick",
+        seed=1,
+        tag="t",
+        asr_model="m",
+        llm_model="l",
+        refine_prompt_id="r",
+        summarize_prompt_id="s",
+        summary_language="pt",
         clips=[ClipResult(clip_id="c", duration=5.0, wer_refined=0.1)],
     )
 
@@ -25,6 +32,7 @@ class TestWriteInterpretation:
     def test_never_scores_is_documented_not_enforced_in_prompt(self):
         # (documentation check, not a runtime guarantee -- see module docstring)
         from transcript_task.eval.interpretation import _INSTRUCTIONS_PT
+
         assert "pontuação" in _INSTRUCTIONS_PT
 
     def test_model_failure_does_not_raise(self):

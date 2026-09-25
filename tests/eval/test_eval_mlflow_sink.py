@@ -1,9 +1,7 @@
-import json
-
 import mlflow
 import pytest
-
 from fakes import FakeChatModel
+
 from transcript_task.eval.compare import compare_runs
 from transcript_task.eval.mlflow_sink import (
     load_local_result,
@@ -16,12 +14,20 @@ from transcript_task.eval.results import BenchmarkResult, ClipResult
 
 def _result(tag: str = "test-run") -> BenchmarkResult:
     return BenchmarkResult(
-        tier="smoke", seed=None, tag=tag, asr_model="whisper-x", llm_model="qwen-x",
-        refine_prompt_id="refine-v1", summarize_prompt_id="summarize-v1", summary_language="pt",
+        tier="smoke",
+        seed=None,
+        tag=tag,
+        asr_model="whisper-x",
+        llm_model="qwen-x",
+        refine_prompt_id="refine-v1",
+        summarize_prompt_id="summarize-v1",
+        summary_language="pt",
         settings_snapshot={"llm_temperature": 0.2},
         clips=[
             ClipResult(clip_id="c1", duration=4.0, wer_raw=0.3, wer_refined=0.1, schema_valid=True),
-            ClipResult(clip_id="c2", duration=6.0, wer_raw=0.2, wer_refined=0.15, error="asr failed"),
+            ClipResult(
+                clip_id="c2", duration=6.0, wer_raw=0.2, wer_refined=0.15, error="asr failed"
+            ),
         ],
     )
 
@@ -75,7 +81,9 @@ class TestLogRun:
             "transcript_task.eval.mlflow_sink.DEFAULT_ARTIFACTS_DIR", str(artifacts_dir)
         )
         model = FakeChatModel(["Interpretação de teste."])
-        run_id = log_run(_result("with-interp"), tracking_dir=str(tracking_dir), interpretation_model=model)
+        run_id = log_run(
+            _result("with-interp"), tracking_dir=str(tracking_dir), interpretation_model=model
+        )
 
         client = mlflow.tracking.MlflowClient(tracking_uri=f"file:{tracking_dir}")
         artifacts = {a.path for a in client.list_artifacts(run_id)}

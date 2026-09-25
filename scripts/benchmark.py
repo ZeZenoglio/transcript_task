@@ -41,7 +41,11 @@ import sys
 from pathlib import Path
 
 from transcript_task.eval.compare import compare_runs
-from transcript_task.eval.mlflow_sink import DEFAULT_ARTIFACTS_DIR, load_local_result, log_comparison
+from transcript_task.eval.mlflow_sink import (
+    DEFAULT_ARTIFACTS_DIR,
+    load_local_result,
+    log_comparison,
+)
 from transcript_task.eval.orchestrator import DATASETS, DatasetNotFetched, run_benchmark_tier
 from transcript_task.eval.results import BenchmarkResult
 from transcript_task.eval.tiers import DEFAULT_QUICK_N, DEFAULT_SEED
@@ -54,30 +58,42 @@ def _log(msg: str) -> None:
 
 def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
     settings = Settings()
-    _log(f"dataset={args.dataset} tier={args.tier} asr_model={settings.asr_model} "
-         f"llm_model={settings.llm_model} refine_prompt_id={settings.refine_prompt_id}")
+    _log(
+        f"dataset={args.dataset} tier={args.tier} asr_model={settings.asr_model} "
+        f"llm_model={settings.llm_model} refine_prompt_id={settings.refine_prompt_id}"
+    )
 
     def on_clip(i: int, total: int, result) -> None:
         status = result.error or (
             f"wer_raw={result.wer_raw:.3f} wer_refined={result.wer_refined:.3f}"
-            if result.wer_refined is not None else f"wer_raw={result.wer_raw:.3f}"
+            if result.wer_refined is not None
+            else f"wer_raw={result.wer_raw:.3f}"
         )
         _log(f"[{i}/{total}] {result.clip_id}: {status}")
 
     try:
         benchmark_result = run_benchmark_tier(
-            settings, dataset=args.dataset, tier=args.tier, tag=args.tag,
-            n=args.n, seed=args.seed, skip_refine=args.skip_refine,
-            no_semdist=args.no_semdist, no_interpretation=args.no_interpretation,
-            use_mlflow=not args.no_mlflow, on_clip=on_clip,
+            settings,
+            dataset=args.dataset,
+            tier=args.tier,
+            tag=args.tag,
+            n=args.n,
+            seed=args.seed,
+            skip_refine=args.skip_refine,
+            no_semdist=args.no_semdist,
+            no_interpretation=args.no_interpretation,
+            use_mlflow=not args.no_mlflow,
+            on_clip=on_clip,
         )
     except DatasetNotFetched as exc:
         sys.exit(str(exc))
 
     if not args.no_mlflow:
         _log("logged to mlflow (mlflow ui --backend-store-uri file:mlruns)")
-    _log(f"done: {benchmark_result.n_clips} clips, {benchmark_result.n_errors} errors, "
-         f"results in {DEFAULT_ARTIFACTS_DIR}/{args.tag}/")
+    _log(
+        f"done: {benchmark_result.n_clips} clips, {benchmark_result.n_errors} errors, "
+        f"results in {DEFAULT_ARTIFACTS_DIR}/{args.tag}/"
+    )
     return benchmark_result
 
 
@@ -105,7 +121,9 @@ def run_compare(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
     run_ap = sub.add_parser("run", help="run a benchmark and log the results")
@@ -115,15 +133,25 @@ def main() -> None:
     run_ap.add_argument("--n", type=int, default=DEFAULT_QUICK_N, help="quick tier sample size")
     run_ap.add_argument("--seed", type=int, default=DEFAULT_SEED, help="quick tier sampling seed")
     run_ap.add_argument("--skip-refine", action="store_true", help="score ASR only, no LLM cleanup")
-    run_ap.add_argument("--no-semdist", action="store_true", help="skip SemDist (no embedding model load)")
-    run_ap.add_argument("--no-interpretation", action="store_true", help="skip the LLM interpretation report")
-    run_ap.add_argument("--no-mlflow", action="store_true", help="write local artifacts only, skip MLflow")
+    run_ap.add_argument(
+        "--no-semdist", action="store_true", help="skip SemDist (no embedding model load)"
+    )
+    run_ap.add_argument(
+        "--no-interpretation", action="store_true", help="skip the LLM interpretation report"
+    )
+    run_ap.add_argument(
+        "--no-mlflow", action="store_true", help="write local artifacts only, skip MLflow"
+    )
 
     compare_ap = sub.add_parser("compare", help="diff two tagged runs; exit 1 on regression")
     compare_ap.add_argument("baseline_tag")
     compare_ap.add_argument("candidate_tag")
-    compare_ap.add_argument("--threshold", type=float, default=0.02,
-                            help="absolute WER/CER/SemDist increase that counts as a regression")
+    compare_ap.add_argument(
+        "--threshold",
+        type=float,
+        default=0.02,
+        help="absolute WER/CER/SemDist increase that counts as a regression",
+    )
     compare_ap.add_argument("--no-mlflow", action="store_true")
 
     args = ap.parse_args()

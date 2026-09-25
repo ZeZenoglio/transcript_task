@@ -18,8 +18,8 @@ import pytest
 from transcript_task.audio import AudioError, convert_to_target, is_already_target_format, probe
 from transcript_task.settings import Settings
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-MANIFEST = [json.loads(l) for l in (FIXTURES_DIR / "manifest.jsonl").read_text().splitlines()]
+FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
+MANIFEST = [json.loads(line) for line in (FIXTURES_DIR / "manifest.jsonl").read_text().splitlines()]
 
 
 def fixture_path(suffix: str) -> Path:
@@ -28,12 +28,15 @@ def fixture_path(suffix: str) -> Path:
 
 
 class TestProbe:
-    @pytest.mark.parametrize("suffix,expected_codec", [
-        (".wav", "pcm_f32le"),   # FLEURS' own format -- float32, not int16
-        (".mp3", "mp3"),
-        (".m4a", "aac"),
-        (".opus", "opus"),
-    ])
+    @pytest.mark.parametrize(
+        "suffix,expected_codec",
+        [
+            (".wav", "pcm_f32le"),  # FLEURS' own format -- float32, not int16
+            (".mp3", "mp3"),
+            (".m4a", "aac"),
+            (".opus", "opus"),
+        ],
+    )
     def test_reads_real_codec_per_format(self, suffix, expected_codec):
         info = probe(fixture_path(suffix))
         assert info.codec == expected_codec

@@ -72,7 +72,9 @@ class TestCharacterErrorRate:
 class TestSemanticDistance:
     def test_identical_text_is_zero_distance(self):
         embedder = FakeEmbedder()
-        assert semantic_distance("o gato dorme", "o gato dorme", embedder) == pytest.approx(0.0, abs=1e-9)
+        assert semantic_distance("o gato dorme", "o gato dorme", embedder) == pytest.approx(
+            0.0, abs=1e-9
+        )
 
     def test_disjoint_text_is_far(self):
         embedder = FakeEmbedder()
@@ -87,14 +89,18 @@ class TestSemanticDistance:
 class TestRefineDelta:
     def test_refine_improves_wer(self):
         gt = "a casa é grande"
-        delta = refine_delta(gt, raw_transcript="a casa e grandi", refined_transcript="a casa é grande")
+        delta = refine_delta(
+            gt, raw_transcript="a casa e grandi", refined_transcript="a casa é grande"
+        )
         assert delta.wer_refined == 0.0
         assert delta.wer_raw > 0.0
         assert delta.wer_delta < 0
 
     def test_refine_hurts_wer_when_it_paraphrases(self):
         gt = "a casa é grande"
-        delta = refine_delta(gt, raw_transcript="a casa é grande", refined_transcript="a residência é enorme")
+        delta = refine_delta(
+            gt, raw_transcript="a casa é grande", refined_transcript="a residência é enorme"
+        )
         assert delta.wer_raw == 0.0
         assert delta.wer_refined > 0.0
         assert delta.wer_delta > 0
@@ -146,7 +152,9 @@ class TestEvaluateSummary:
 
     def test_valid_summary_passes_all_conformance_checks(self):
         result = evaluate_summary(
-            self._summary(), used_retry=False, used_fallback=False,
+            self._summary(),
+            used_retry=False,
+            used_fallback=False,
             expected_language_variant="pt-PT",
         )
         assert result.schema_valid is True
@@ -159,7 +167,9 @@ class TestEvaluateSummary:
         # Pydantic allows 1-12 topics (see summarize.py); the prompt asks for
         # 3-8. A 1-topic summary is schema-valid but not prompt-conformant.
         result = evaluate_summary(
-            self._summary(topics=["a"]), used_retry=False, used_fallback=False,
+            self._summary(topics=["a"]),
+            used_retry=False,
+            used_fallback=False,
             expected_language_variant=None,
         )
         assert result.schema_valid is True
@@ -167,14 +177,18 @@ class TestEvaluateSummary:
 
     def test_language_variant_mismatch_flagged(self):
         result = evaluate_summary(
-            self._summary(language_variant="pt-BR"), used_retry=False, used_fallback=False,
+            self._summary(language_variant="pt-BR"),
+            used_retry=False,
+            used_fallback=False,
             expected_language_variant="pt-PT",
         )
         assert result.language_variant_matches is False
 
     def test_no_expected_variant_is_none(self):
         result = evaluate_summary(
-            self._summary(), used_retry=False, used_fallback=False,
+            self._summary(),
+            used_retry=False,
+            used_fallback=False,
             expected_language_variant=None,
         )
         assert result.language_variant_matches is None
@@ -182,14 +196,19 @@ class TestEvaluateSummary:
     def test_description_transcript_semdist_computed_when_given(self):
         result = evaluate_summary(
             self._summary(description="o gato dorme"),
-            used_retry=False, used_fallback=False, expected_language_variant=None,
-            transcript="o gato dorme", embedder=FakeEmbedder(),
+            used_retry=False,
+            used_fallback=False,
+            expected_language_variant=None,
+            transcript="o gato dorme",
+            embedder=FakeEmbedder(),
         )
         assert result.description_transcript_semdist == pytest.approx(0.0, abs=1e-9)
 
     def test_description_transcript_semdist_none_without_embedder(self):
         result = evaluate_summary(
-            self._summary(), used_retry=False, used_fallback=False,
+            self._summary(),
+            used_retry=False,
+            used_fallback=False,
             expected_language_variant=None,
         )
         assert result.description_transcript_semdist is None

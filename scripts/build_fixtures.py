@@ -64,31 +64,53 @@ def convert(src: Path, dst: Path, target_ext: str, source_ext: str) -> None:
         return
     proc = subprocess.run(
         ["ffmpeg", "-v", "error", "-y", "-i", str(src), "-c:a", CODECS[target_ext], str(dst)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         sys.exit(f"ffmpeg failed converting {src} -> {dst}: {proc.stderr.strip()}")
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--source-dir", type=Path, default=Path("data/fleurs_pt"),
-                     help="dataset directory containing manifest.jsonl + audio/ (default: data/fleurs_pt)")
-    ap.add_argument("--dest-dir", type=Path, default=Path("tests/fixtures"),
-                     help="where to write the fixture subset (default: tests/fixtures)")
-    ap.add_argument("--source-ext", default="wav",
-                     help="the source dataset's native audio extension, kept as-is for one "
-                          "clip rather than re-encoded (default: wav, FLEURS' own format)")
-    ap.add_argument("--source-label", default="google/fleurs (CC-BY-4.0)",
-                     help="short attribution string recorded in each manifest entry")
-    ap.add_argument("--count", type=int, default=len(ALL_FORMATS),
-                     help=f"how many clips to pick (default: {len(ALL_FORMATS)}, one per format)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--source-dir",
+        type=Path,
+        default=Path("data/fleurs_pt"),
+        help="dataset directory containing manifest.jsonl + audio/ (default: data/fleurs_pt)",
+    )
+    ap.add_argument(
+        "--dest-dir",
+        type=Path,
+        default=Path("tests/fixtures"),
+        help="where to write the fixture subset (default: tests/fixtures)",
+    )
+    ap.add_argument(
+        "--source-ext",
+        default="wav",
+        help="the source dataset's native audio extension, kept as-is for one "
+        "clip rather than re-encoded (default: wav, FLEURS' own format)",
+    )
+    ap.add_argument(
+        "--source-label",
+        default="google/fleurs (CC-BY-4.0)",
+        help="short attribution string recorded in each manifest entry",
+    )
+    ap.add_argument(
+        "--count",
+        type=int,
+        default=len(ALL_FORMATS),
+        help=f"how many clips to pick (default: {len(ALL_FORMATS)}, one per format)",
+    )
     args = ap.parse_args()
 
     manifest_path = args.source_dir / "manifest.jsonl"
     if not manifest_path.exists():
-        sys.exit(f"{manifest_path} not found -- fetch the dataset first (see this script's docstring).")
+        sys.exit(
+            f"{manifest_path} not found -- fetch the dataset first (see this script's docstring)."
+        )
 
     clips = pick_diverse_clips(manifest_path, args.count)
     formats = pick_formats(args.source_ext, len(clips))
@@ -97,7 +119,7 @@ def main() -> None:
     audio_dir.mkdir(parents=True, exist_ok=True)
 
     entries = []
-    for clip, ext in zip(clips, formats):
+    for clip, ext in zip(clips, formats, strict=True):
         src = args.source_dir / clip["audio_path"]
         # Keyed by the source clip's own filename stem, not any dataset id
         # field -- fetch_dataset.py's docstring documents why a dataset's
@@ -105,11 +127,13 @@ def main() -> None:
         dst_name = f"{Path(clip['audio_path']).stem}.{ext}"
         dst = audio_dir / dst_name
         convert(src, dst, ext, args.source_ext)
-        entries.append({
-            **{k: v for k, v in clip.items() if k != "audio_path"},
-            "audio_path": f"audio/{dst_name}",
-            "source": args.source_label,
-        })
+        entries.append(
+            {
+                **{k: v for k, v in clip.items() if k != "audio_path"},
+                "audio_path": f"audio/{dst_name}",
+                "source": args.source_label,
+            }
+        )
         print(f"{clip['duration']:>6.1f}s  {clip['audio_path']} -> {dst_name}")
 
     fixtures_manifest = args.dest_dir / "manifest.jsonl"

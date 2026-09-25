@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from build_fixtures import pick_diverse_clips, pick_formats  # noqa: E402
 
@@ -19,10 +19,18 @@ def _write_manifest(tmp_path: Path, durations: list[float]) -> Path:
     manifest = tmp_path / "manifest.jsonl"
     with open(manifest, "w", encoding="utf-8") as f:
         for i, d in enumerate(durations):
-            f.write(json.dumps({
-                "id": i, "audio_path": f"audio/fleurs_{i:05d}.wav",
-                "ground_truth": f"transcript {i}", "duration": d, "split": "test",
-            }) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "id": i,
+                        "audio_path": f"audio/fleurs_{i:05d}.wav",
+                        "ground_truth": f"transcript {i}",
+                        "duration": d,
+                        "split": "test",
+                    }
+                )
+                + "\n"
+            )
     return manifest
 
 
@@ -43,7 +51,7 @@ class TestPickDiverseClips:
         manifest = _write_manifest(tmp_path, [float(i) for i in range(100)])
         picked = pick_diverse_clips(manifest, n=5)
         durations = sorted(p["duration"] for p in picked)
-        gaps = [b - a for a, b in zip(durations, durations[1:])]
+        gaps = [b - a for a, b in zip(durations, durations[1:], strict=False)]
         # no two picks should be right next to each other when 100 rows
         # spread across only 5 picks -- a naive "first N" would fail this
         assert min(gaps) > 5

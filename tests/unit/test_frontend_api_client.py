@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "frontend"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "frontend"))
 
 from api_client import ApiClient, ApiError  # noqa: E402
 
@@ -41,9 +41,16 @@ class TestHealth:
 
 class TestErrorExtraction:
     def test_rfc7807_detail_is_surfaced(self, client, monkeypatch):
-        problem = {"type": "about:blank", "title": "Not Found", "status": 404,
-                   "detail": "no such job: deadbeef", "instance": "/v1/jobs/deadbeef"}
-        monkeypatch.setattr("api_client.httpx.get", lambda url, timeout: httpx.Response(404, json=problem))
+        problem = {
+            "type": "about:blank",
+            "title": "Not Found",
+            "status": 404,
+            "detail": "no such job: deadbeef",
+            "instance": "/v1/jobs/deadbeef",
+        }
+        monkeypatch.setattr(
+            "api_client.httpx.get", lambda url, timeout: httpx.Response(404, json=problem)
+        )
         with pytest.raises(ApiError, match="no such job: deadbeef"):
             client.get_job("deadbeef")
 

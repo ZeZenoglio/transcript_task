@@ -67,10 +67,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--out", type=Path, default=Path("data/fleurs_pt"),
-                     help="destination directory (default: data/fleurs_pt)")
-    ap.add_argument("--limit", type=int, default=None,
-                     help="only fetch the first N rows, for a quick check")
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=Path("data/fleurs_pt"),
+        help="destination directory (default: data/fleurs_pt)",
+    )
+    ap.add_argument(
+        "--limit", type=int, default=None, help="only fetch the first N rows, for a quick check"
+    )
     args = ap.parse_args()
 
     from datasets import Audio, load_dataset
@@ -84,8 +89,10 @@ def main() -> None:
     # split just to keep 20 rows of it -- non-streaming `.select()` after
     # `load_dataset()` would download everything first regardless of limit.
     streaming = args.limit is not None
-    print(f"Loading {DATASET}/{CONFIG} split={SPLIT} @ {REVISION[:12]}"
-          f"{' (streaming)' if streaming else ''}...")
+    print(
+        f"Loading {DATASET}/{CONFIG} split={SPLIT} @ {REVISION[:12]}"
+        f"{' (streaming)' if streaming else ''}..."
+    )
     ds = load_dataset(DATASET, CONFIG, split=SPLIT, revision=REVISION, streaming=streaming)
     ds = ds.cast_column("audio", Audio(decode=False))
     if args.limit:

@@ -1,5 +1,3 @@
-import pytest
-
 from transcript_task.eval.compare import compare_runs
 from transcript_task.eval.results import BenchmarkResult, ClipResult
 
@@ -10,8 +8,14 @@ def _clip(wer_refined: float | None) -> ClipResult:
 
 def _run(tag: str, wer_values: list[float]) -> BenchmarkResult:
     return BenchmarkResult(
-        tier="quick", seed=1, tag=tag, asr_model="m", llm_model="l",
-        refine_prompt_id="r", summarize_prompt_id="s", summary_language="pt",
+        tier="quick",
+        seed=1,
+        tag=tag,
+        asr_model="m",
+        llm_model="l",
+        refine_prompt_id="r",
+        summarize_prompt_id="s",
+        summary_language="pt",
         clips=[_clip(w) for w in wer_values],
     )
 

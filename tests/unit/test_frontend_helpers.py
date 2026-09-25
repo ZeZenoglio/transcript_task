@@ -8,7 +8,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "frontend"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "frontend"))
 
 from helpers import (  # noqa: E402
     docx_download_filename,
@@ -27,7 +27,14 @@ class TestStageProgress:
         assert 0 < p < 1
 
     def test_progress_increases_through_the_pipeline(self):
-        stages = ["queued", "normalizing", "transcribing", "refining", "summarizing", "writing_docx"]
+        stages = [
+            "queued",
+            "normalizing",
+            "transcribing",
+            "refining",
+            "summarizing",
+            "writing_docx",
+        ]
         values = [stage_progress(s) for s in stages]
         assert values == sorted(values)
 
@@ -48,7 +55,14 @@ class TestIsTerminal:
             assert is_terminal(status)
 
     def test_non_terminal_statuses(self):
-        for status in ("queued", "normalizing", "transcribing", "refining", "summarizing", "writing_docx"):
+        for status in (
+            "queued",
+            "normalizing",
+            "transcribing",
+            "refining",
+            "summarizing",
+            "writing_docx",
+        ):
             assert not is_terminal(status)
 
 

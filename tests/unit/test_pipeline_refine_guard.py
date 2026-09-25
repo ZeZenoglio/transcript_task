@@ -10,6 +10,7 @@ shipping garbage.
 from __future__ import annotations
 
 from fakes import FakeChatModel
+
 from transcript_task.pipeline import refine_rejection_reason, stage_refine
 from transcript_task.settings import Settings
 
@@ -117,9 +118,14 @@ class TestStageRefineGuardIntegration:
         refined_transcript from a better one sitting around."""
         settings = self._settings(tmp_path)
         raw = "isso é um teste curto"
-        state = {"items": {"a.m4a": {
-            "raw_transcript": raw, "refined_transcript": "Isso é um teste curto.",
-        }}}
+        state = {
+            "items": {
+                "a.m4a": {
+                    "raw_transcript": raw,
+                    "refined_transcript": "Isso é um teste curto.",
+                }
+            }
+        }
         model = FakeChatModel(["palavra repetida " * 500])
 
         stage_refine(state, settings, force=True, model=model)
@@ -131,10 +137,19 @@ class TestStageRefineGuardIntegration:
     def test_a_previously_rejected_result_is_cleared_on_a_later_success(self, tmp_path):
         settings = self._settings(tmp_path)
         raw = "ola tudo bem"
-        state = {"items": {"a.m4a": {
-            "raw_transcript": raw,
-            "refine_rejected": {"reason": "x", "content_recall": 0.1, "length_ratio": 9.0, "text": "lixo"},
-        }}}
+        state = {
+            "items": {
+                "a.m4a": {
+                    "raw_transcript": raw,
+                    "refine_rejected": {
+                        "reason": "x",
+                        "content_recall": 0.1,
+                        "length_ratio": 9.0,
+                        "text": "lixo",
+                    },
+                }
+            }
+        }
         model = FakeChatModel(["Olá, tudo bem?"])
 
         stage_refine(state, settings, force=True, model=model)

@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–9 complete (2026-09-25, on `dev`). Phases 10-12 pending. All open
+**Status:** Phases 0–10 complete (2026-09-25, on `dev`). Phases 11-12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -20,14 +20,14 @@ README and this plan were swept for scenario-specific framing and examples.
 | Works | `extract → normalize → transcribe → refine → summarize → docx`, JSON checkpointing, stable `transcript_id` per recording; validated end-to-end on FLEURS clips (no private recordings remain on this machine as of Phase 5) |
 | Models | `mlx-whisper` large-v3-turbo (ASR) · `qwen3.5:9b` via Ollama, `think=False` (refine + summarize) · `spacy` `pt_core_news_sm` (PII safety net) |
 | Measured | 13:35 audio → 77 s ASR + 202 s refine + ~110s summarize on an M4 base (measured before Phase 5's deletion, against the original private recordings) |
-| Tests | 290 unit tests (`uv run pytest`) + 3 integration tests against real Ollama/mlx-whisper |
+| Tests | `tests/{unit,eval,e2e,integration}/`, 294 total: 251 fast/offline (`uv run pytest`, unit+eval tiers), 40 e2e (full API lifecycle, fakes), 3 integration against real Ollama/mlx-whisper. `ruff check`/`ruff format`/`mypy src/` all clean; ~89.6% coverage on `src/` |
 | Benchmark data | FLEURS pt_br (919 clips, `scripts/fetch_dataset.py`) + Common Voice pt (9,467 clips, `scripts/fetch_common_voice.py`); diversified fixtures committed under `tests/fixtures/` and `tests/fixtures_noisy/` |
 | Eval harness | `scripts/benchmark.py run/compare --dataset {fleurs,common_voice}` — WER/CER/SemDist, refine before/after delta, deterministic summary metrics, MLflow (`mlruns/`) + local `benchmarks/*.json` |
 | Refine safety net | production runtime guard (`text_compare.py` + `pipeline.stage_refine`) discards a refine call that drifts too far from the raw transcript, visibly, falling back to raw |
 | Refine prompt | `refine-pt-v2` (default), tuned and measured against both benchmarks: cut refine's own WER regressions 7/30→2/30 (Common Voice) and 13/30→6/30 (FLEURS) vs. `refine-pt-v1`, still available by id |
 | API | FastAPI (`transcript_task.api.app`) — jobs (async, per-job `refine` toggle, always both transcripts when refine runs), config (live-patchable, validated, versioned per job), models, benchmark endpoints; SQLite (`runs.db`) persistence; `structlog` JSON+console logging; RFC 7807 errors, full OpenAPI docs at `/docs` |
 | Frontend | `frontend/app.py` — single-screen Streamlit demo (upload → poll → result → reset), polls the API only, never imports the pipeline |
-| Missing | linting, CI |
+| Missing | CI |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
 As of Phase 2, the code is a proper `src/` package (`src/transcript_task/`) with a
@@ -1285,6 +1285,98 @@ tests/eval/          metric correctness (not model quality)
 - Coverage target ~80% on `src/`, with the honest exception of thin model-call wrappers.
 - **Ruff** for lint + format (replacing black/isort), configured in `pyproject.toml`,
   plus `mypy` on `src/` if it isn't a fight. Dev deps via `uv add --dev`.
+
+**Done, 2026-09-25, on `dev`.** Built as planned, with a few implementation
+calls worth recording:
+
+- **Directory split** as sketched, via `git mv`: the 24 existing test files
+  moved into `tests/{unit,eval,e2e,integration}/`, and the three integration
+  tests that were living inline at the bottom of otherwise-fake-only files
+  (`test_summarize.py`, `test_eval_runner.py`, `test_api.py`) were split out
+  into their own `tests/integration/test_*_integration.py` files rather than
+  staying mixed in. Every path-relative reference (`Path(__file__).parent /
+  "fixtures"`, `sys.path.insert(...parents[1]...)` for reaching `scripts/`
+  and `frontend/`) needed updating one level deeper; `tests/fakes.py` and
+  `tests/fixtures{,_noisy}/` stayed shared at the `tests/` root, reachable
+  from every tier via a new `pythonpath = ["tests"]` pytest setting rather
+  than turning `tests/` into a package.
+- **Tier markers are applied automatically by directory**, not hand-decorated
+  per test (`tests/conftest.py`'s `pytest_collection_modifyitems`), so a
+  file's tier can't drift from where it actually lives. `tests/eval/` carries
+  the `unit` marker rather than a fifth one -- it has the identical
+  fast/offline/fakes-only profile as `tests/unit/`, so the directory split is
+  organisational (matching this section's own diagram), not a new selection
+  axis beyond the four markers named above. `tests/integration/` files also
+  keep an explicit `@pytest.mark.integration` decorator for clarity when read
+  standalone; applying the same marker twice is harmless.
+- **`slow` is registered but unused for now.** `--durations=15` across the
+  whole suite tops out at 0.73s; nothing here is meaningfully slower than its
+  own tier yet. Kept available for whenever that changes rather than forced
+  onto something that doesn't need it.
+- **`pytest-asyncio` not added.** The one genuinely-async test file
+  (`test_api_async.py`) already worked via `pytest.mark.anyio` and anyio's own
+  pytest plugin, which comes in transitively through httpx/Starlette --
+  adding `pytest-asyncio` alongside it would be a second, unused async-test
+  dependency for a marker nothing uses.
+- **Coverage: 89.6%** on `src/` (target ~80%), via `pytest-cov` +
+  `[tool.coverage]` in `pyproject.toml`. `asr.py` is excluded outright (the
+  thin `mlx_whisper` wrapper the plan's "honest exception" names); `pipeline.py`
+  sits at 56% because its CLI entrypoint (`main()`/argparse/`resolve_input`) has
+  been verified by real manual runs against real recordings since Phase 2, not
+  by an automated test -- a pre-existing, known gap, surfaced rather than
+  quietly left off this report.
+- **Ruff found real, mostly-mechanical drift** (`ruff format .` reformatted
+  46 files; `ruff check --fix` cleared unsorted imports, `datetime.UTC`/
+  `collections.abc.Callable` modernisation, and 4 unused-import cases). One
+  of those four was not actually unused: `eval/metrics.py` re-exports
+  `content_recall`/`length_ratio` from `text_compare.py` on purpose (its own
+  comment says so) so other modules can import them from either place; ruff's
+  autofix stripped the import anyway and broke three test files' collection
+  immediately. Fixed with the standard explicit-re-export idiom
+  (`from ..text_compare import content_recall as content_recall`), which ruff
+  itself recognises and leaves alone. The remaining ~10 genuine long lines are
+  prose inside multi-line docstrings/LLM prompt-template strings (CLI usage
+  examples, the Portuguese refine/summarize instructions) where a trailing
+  `# noqa` isn't even syntactically reachable mid-string and mechanically
+  wrapping the sentences would be pure churn (or, for the prompt text, a real
+  behavior risk) — carved out via `[tool.ruff.lint.per-file-ignores]` instead.
+  Ruff's Markdown-embedded-code formatting (it reflows fenced ` ```python `
+  blocks inside `.md` files too) was turned off for `*.md` specifically so it
+  doesn't rewrite this file's and the README's illustrative snippets as if
+  they were real source.
+- **mypy had never run on this codebase before** (it's new this phase), and
+  found real gaps, not just noise -- 26 errors on the first pass, all fixed:
+  `JobStatus`/`BenchmarkStatus` migrated from `(str, Enum)` to `enum.StrEnum`;
+  a `TypedDict` added for the `DATASETS` benchmark config (a dict-of-dicts
+  with per-key value types, which mypy's invariant dict join was collapsing
+  to `object` and silently losing all index-ability on); three spots where
+  the `ollama` SDK types a model's `.model` name as `str | None` now filter
+  defensively rather than assume it's always set; and one genuine latent bug
+  in `create_job` -- `UploadFile.filename` is `Optional` at the type level,
+  and the code used the un-defaulted `file.filename` for the saved path/DB
+  row/worker submission after already treating it as possibly-empty for the
+  extension check, a real (if unlikely with normal clients) `Path / None`
+  crash waiting for a client that omits it. Fixed with one `filename =
+  file.filename or ""` used consistently after. A handful of remaining cases
+  are legitimate framework/stub false positives, each commented at the site:
+  `app.openapi = custom_openapi` (FastAPI's own documented override pattern),
+  SQLModel's class-level `Job.created_at.desc()` (a real
+  `InstrumentedAttribute` at runtime typed as instance-level `datetime`), and
+  a `cast` where `StageTiming.stage` (plain `str` in SQLite) feeds
+  `StageTimingOut.stage`'s `Literal` (only `pipeline.py`'s own stage functions
+  ever write that column).
+- **Environmental aside, not code:** mypy's first run crashed with an
+  internal SQLite "disk full" error -- the machine was genuinely at 99%
+  capacity (174 MB free). Fixed with the user's explicit go-ahead: `uv cache
+  clean` (freed ~7.3 GB from `~/.cache/uv`, a pure re-downloadable package
+  cache) plus clearing this session's own `.mypy_cache`/`.ruff_cache`/
+  `.pytest_cache`/`__pycache__` (already gitignored, regenerate on demand).
+  Not a repo change, but worth recording since it's exactly the kind of
+  silent-workaround temptation this project's transparency norm exists for.
+- All 294 tests (251 unit-tier incl. 1 skip, 40 e2e, 3 integration) pass
+  after the reorg, including a real re-run of all 3 integration tests against
+  live mlx-whisper/Ollama (not just collection) to confirm the file moves and
+  the mypy-driven fixes above didn't change real-model behavior.
 
 ---
 

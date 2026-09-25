@@ -36,14 +36,14 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from .asr import Transcriber, MlxWhisperTranscriber
+from .asr import MlxWhisperTranscriber, Transcriber
 from .audio import AudioError, convert_to_target, is_already_target_format, probe
 from .docx_writer import human_duration, write_docx
 from .prompts import get_refine_template
 from .refine import ChatModel, OllamaChatModel, refine_transcript
 from .settings import PROJECT_ROOT, Settings
-from .text_compare import content_recall, length_ratio
 from .summarize import TranscriptSummary, docx_filename, summarize_transcript
+from .text_compare import content_recall, length_ratio
 
 STAGES = ("extract", "normalize", "transcribe", "refine", "summarize", "docx")
 
@@ -51,6 +51,7 @@ STAGES = ("extract", "normalize", "transcribe", "refine", "summarize", "docx")
 # ---------------------------------------------------------------------------
 # small helpers
 # ---------------------------------------------------------------------------
+
 
 def log(stage: str, msg: str) -> None:
     print(f"[{stage:<9}] {msg}", flush=True)
@@ -96,6 +97,7 @@ def save_state(state: dict, settings: Settings) -> None:
 # stage 1 - extract
 # ---------------------------------------------------------------------------
 
+
 def resolve_input(explicit: Path | None) -> Path:
     """Figure out what to process: an explicit path, or the lone zip in ROOT."""
     if explicit is not None:
@@ -107,10 +109,7 @@ def resolve_input(explicit: Path | None) -> Path:
     if len(zips) == 1:
         return zips[0]
     if len(zips) > 1:
-        sys.exit(
-            f"Multiple zip files found in {PROJECT_ROOT}; "
-            f"pick one with --input <path>."
-        )
+        sys.exit(f"Multiple zip files found in {PROJECT_ROOT}; pick one with --input <path>.")
     sys.exit(
         "No input given and no .zip file found in the project root. "
         "Pass a zip archive of recordings or a single audio file, e.g.\n"
@@ -162,7 +161,8 @@ def stage_extract(input_path: Path, settings: Settings, force: bool) -> list[Pat
             extracted += 1
 
     files = sorted(
-        p for p in settings.extract_dir.iterdir()
+        p
+        for p in settings.extract_dir.iterdir()
         if p.is_file() and p.suffix.lower() in settings.audio_extensions
     )
     log("extract", f"{extracted} newly extracted, {len(files)} audio files total")
@@ -172,6 +172,7 @@ def stage_extract(input_path: Path, settings: Settings, force: bool) -> list[Pat
 # ---------------------------------------------------------------------------
 # stage 2 - normalize
 # ---------------------------------------------------------------------------
+
 
 def stage_normalize(files: list[Path], state: dict, settings: Settings, force: bool) -> None:
     """Convert everything to 16 kHz mono PCM WAV, which is what Whisper wants."""
@@ -199,9 +200,10 @@ def stage_normalize(files: list[Path], state: dict, settings: Settings, force: b
             continue
 
         already_ok = is_already_target_format(path, info, settings)
-        action = "copy (already 16k mono)" if already_ok else (
-            f"convert {info.codec} {info.sample_rate}Hz "
-            f"{info.channels}ch -> 16k mono"
+        action = (
+            "copy (already 16k mono)"
+            if already_ok
+            else (f"convert {info.codec} {info.sample_rate}Hz {info.channels}ch -> 16k mono")
         )
 
         if already_ok:
@@ -214,14 +216,16 @@ def stage_normalize(files: list[Path], state: dict, settings: Settings, force: b
                 item["error"] = "ffmpeg conversion failed"
                 continue
 
-        item.update({
-            "source_file": key,
-            "source_format": info.codec,
-            "source_sample_rate": info.sample_rate,
-            "source_channels": info.channels,
-            "duration_seconds": round(info.duration, 2) if info.duration else None,
-            "normalized": str(wav.relative_to(PROJECT_ROOT)),
-        })
+        item.update(
+            {
+                "source_file": key,
+                "source_format": info.codec,
+                "source_sample_rate": info.sample_rate,
+                "source_channels": info.channels,
+                "duration_seconds": round(info.duration, 2) if info.duration else None,
+                "normalized": str(wav.relative_to(PROJECT_ROOT)),
+            }
+        )
         item.pop("error", None)
         log("normalize", f"{key}: {action}")
 
@@ -230,11 +234,15 @@ def stage_normalize(files: list[Path], state: dict, settings: Settings, force: b
 # stage 3 - transcribe
 # ---------------------------------------------------------------------------
 
-def stage_transcribe(state: dict, settings: Settings, force: bool, transcriber: Transcriber | None = None) -> None:
+
+def stage_transcribe(
+    state: dict, settings: Settings, force: bool, transcriber: Transcriber | None = None
+) -> None:
     transcriber = transcriber or MlxWhisperTranscriber(settings.asr_model)
 
     pending = [
-        (k, v) for k, v in state["items"].items()
+        (k, v)
+        for k, v in state["items"].items()
         if v.get("normalized") and (force or not v.get("raw_transcript"))
     ]
     if not pending:
@@ -262,14 +270,14 @@ def stage_transcribe(state: dict, settings: Settings, force: bool, transcriber: 
 
         dur = item.get("duration_seconds") or 0
         speed = f"{dur / elapsed:.1f}x realtime" if elapsed > 0 and dur else ""
-        log("transcribe", f"{key}: {len(item['raw_transcript'])} chars "
-                          f"in {elapsed:.1f}s {speed}")
+        log("transcribe", f"{key}: {len(item['raw_transcript'])} chars in {elapsed:.1f}s {speed}")
         save_state(state, settings)  # checkpoint after every file
 
 
 # ---------------------------------------------------------------------------
 # stage 4 - refine
 # ---------------------------------------------------------------------------
+
 
 def refine_rejection_reason(raw: str, refined: str, settings: Settings) -> dict | None:
     """Ground-truth-free sanity check on refine's own output (see
@@ -282,15 +290,22 @@ def refine_rejection_reason(raw: str, refined: str, settings: Settings) -> dict 
     if recall < settings.refine_min_content_recall:
         return {"reason": "content_recall too low", "content_recall": recall, "length_ratio": ratio}
     if not (settings.refine_min_length_ratio <= ratio <= settings.refine_max_length_ratio):
-        return {"reason": "length_ratio out of bounds", "content_recall": recall, "length_ratio": ratio}
+        return {
+            "reason": "length_ratio out of bounds",
+            "content_recall": recall,
+            "length_ratio": ratio,
+        }
     return None
 
 
-def stage_refine(state: dict, settings: Settings, force: bool, model: ChatModel | None = None) -> None:
+def stage_refine(
+    state: dict, settings: Settings, force: bool, model: ChatModel | None = None
+) -> None:
     model = model or OllamaChatModel(settings.llm_model)
 
     pending = [
-        (k, v) for k, v in state["items"].items()
+        (k, v)
+        for k, v in state["items"].items()
         if v.get("raw_transcript") and (force or not v.get("refined_transcript"))
     ]
     if not pending:
@@ -302,7 +317,10 @@ def stage_refine(state: dict, settings: Settings, force: bool, model: ChatModel 
         started = time.time()
         try:
             text = refine_transcript(
-                item["raw_transcript"], model, get_refine_template(settings.refine_prompt_id), settings.llm_options
+                item["raw_transcript"],
+                model,
+                get_refine_template(settings.refine_prompt_id),
+                settings.llm_options,
             )
         except Exception as exc:  # noqa: BLE001
             log("refine", f"FAILED {key}: {exc}")
@@ -321,9 +339,12 @@ def stage_refine(state: dict, settings: Settings, force: bool, model: ChatModel 
             # generated and why it was rejected, not just that it was.
             item["refine_rejected"] = {**rejection, "text": text}
             item.pop("refined_transcript", None)
-            log("refine", f"{key}: REJECTED ({rejection['reason']}: "
-                          f"content_recall={rejection['content_recall']}, "
-                          f"length_ratio={rejection['length_ratio']}) -- using raw transcript")
+            log(
+                "refine",
+                f"{key}: REJECTED ({rejection['reason']}: "
+                f"content_recall={rejection['content_recall']}, "
+                f"length_ratio={rejection['length_ratio']}) -- using raw transcript",
+            )
         else:
             item["refined_transcript"] = text
             item.pop("refine_rejected", None)
@@ -335,18 +356,25 @@ def stage_refine(state: dict, settings: Settings, force: bool, model: ChatModel 
 # stage 5 - summarize
 # ---------------------------------------------------------------------------
 
-def stage_summarize(state: dict, settings: Settings, force: bool, model: ChatModel | None = None) -> None:
+
+def stage_summarize(
+    state: dict, settings: Settings, force: bool, model: ChatModel | None = None
+) -> None:
     model = model or OllamaChatModel(settings.llm_model)
 
     pending = [
-        (k, v) for k, v in state["items"].items()
+        (k, v)
+        for k, v in state["items"].items()
         if v.get("raw_transcript") and (force or not v.get("summary"))
     ]
     if not pending:
         log("summarize", "nothing to do (all cached)")
         return
 
-    log("summarize", f"{len(pending)} file(s) with {settings.llm_model} ({settings.summary_language})")
+    log(
+        "summarize",
+        f"{len(pending)} file(s) with {settings.llm_model} ({settings.summary_language})",
+    )
     for key, item in pending:
         started = time.time()
         try:
@@ -365,15 +393,19 @@ def stage_summarize(state: dict, settings: Settings, force: bool, model: ChatMod
         item["summary"] = summary.model_dump()
         item["summarize_seconds"] = round(time.time() - started, 2)
         item.pop("summarize_error", None)
-        log("summarize", f"{key}: \"{summary.title}\" "
-                          f"(confidence={summary.confidence}, sensitivity={summary.sensitivity}) "
-                          f"in {item['summarize_seconds']:.1f}s")
+        log(
+            "summarize",
+            f'{key}: "{summary.title}" '
+            f"(confidence={summary.confidence}, sensitivity={summary.sensitivity}) "
+            f"in {item['summarize_seconds']:.1f}s",
+        )
         save_state(state, settings)
 
 
 # ---------------------------------------------------------------------------
 # stage 6 - docx
 # ---------------------------------------------------------------------------
+
 
 def stage_docx(state: dict, settings: Settings) -> None:
     settings.docx_dir.mkdir(parents=True, exist_ok=True)
@@ -385,7 +417,8 @@ def stage_docx(state: dict, settings: Settings) -> None:
 
         summary = TranscriptSummary.model_validate(item["summary"]) if item.get("summary") else None
         filename = docx_filename(
-            item["transcript_id"], summary,
+            item["transcript_id"],
+            summary,
             language=settings.summary_language,
             anonymize=settings.anonymize_metadata,
         )
@@ -402,18 +435,32 @@ def stage_docx(state: dict, settings: Settings) -> None:
 # entrypoint
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--input", type=Path, default=None, metavar="PATH",
-                    help="a zip archive of recordings, or a single audio file. "
-                         "If omitted, uses the only .zip in the project root.")
-    ap.add_argument("--force", action="store_true",
-                    help="redo every stage, ignoring cached results")
-    ap.add_argument("--only", nargs="+", choices=STAGES, metavar="STAGE",
-                    help=f"run only these stages ({', '.join(STAGES)})")
-    ap.add_argument("--skip-refine", action="store_true",
-                    help="transcribe only, no LLM cleanup pass")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="a zip archive of recordings, or a single audio file. "
+        "If omitted, uses the only .zip in the project root.",
+    )
+    ap.add_argument(
+        "--force", action="store_true", help="redo every stage, ignoring cached results"
+    )
+    ap.add_argument(
+        "--only",
+        nargs="+",
+        choices=STAGES,
+        metavar="STAGE",
+        help=f"run only these stages ({', '.join(STAGES)})",
+    )
+    ap.add_argument(
+        "--skip-refine", action="store_true", help="transcribe only, no LLM cleanup pass"
+    )
     args = ap.parse_args()
 
     stages = set(args.only) if args.only else set(STAGES)
@@ -432,10 +479,15 @@ def main() -> None:
         input_path = resolve_input(args.input)
         files = stage_extract(input_path, settings, args.force)
     else:
-        files = sorted(
-            p for p in settings.extract_dir.glob("*")
-            if p.is_file() and p.suffix.lower() in settings.audio_extensions
-        ) if settings.extract_dir.exists() else []
+        files = (
+            sorted(
+                p
+                for p in settings.extract_dir.glob("*")
+                if p.is_file() and p.suffix.lower() in settings.audio_extensions
+            )
+            if settings.extract_dir.exists()
+            else []
+        )
 
     if "normalize" in stages:
         stage_normalize(files, state, settings, args.force)
@@ -459,9 +511,12 @@ def main() -> None:
 
     ok = sum(1 for v in state["items"].values() if v.get("raw_transcript"))
     audio = sum(v.get("duration_seconds") or 0 for v in state["items"].values())
-    log("done", f"{ok}/{len(state['items'])} transcribed · "
-                f"{human_duration(audio)} of audio · "
-                f"{time.time() - t0:.1f}s wall clock")
+    log(
+        "done",
+        f"{ok}/{len(state['items'])} transcribed · "
+        f"{human_duration(audio)} of audio · "
+        f"{time.time() - t0:.1f}s wall clock",
+    )
     log("done", f"JSON: {settings.transcripts_json.relative_to(PROJECT_ROOT)}")
 
 

@@ -133,10 +133,23 @@ class Settings(BaseSettings):
     target_channels: int = 1
     target_codec: str = "pcm_s16le"
     audio_extensions: frozenset[str] = Field(
-        default_factory=lambda: frozenset({
-            ".m4a", ".opus", ".mp3", ".wav", ".ogg", ".flac",
-            ".aac", ".wma", ".amr", ".mp4", ".webm", ".m4b", ".3gp",
-        })
+        default_factory=lambda: frozenset(
+            {
+                ".m4a",
+                ".opus",
+                ".mp3",
+                ".wav",
+                ".ogg",
+                ".flac",
+                ".aac",
+                ".wma",
+                ".amr",
+                ".mp4",
+                ".webm",
+                ".m4b",
+                ".3gp",
+            }
+        )
     )
 
     # --- API (Phase 7) ---------------------------------------------------

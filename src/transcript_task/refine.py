@@ -71,7 +71,9 @@ def _strip_markdown_fence(text: str) -> str:
     return "\n".join(body).strip()
 
 
-def refine_transcript(raw_transcript: str, model: ChatModel, template: PromptTemplate, options: dict) -> str:
+def refine_transcript(
+    raw_transcript: str, model: ChatModel, template: PromptTemplate, options: dict
+) -> str:
     """Run one transcript through the cleanup prompt and return the result."""
     prompt = template.render(transcript=raw_transcript)
     return model.chat(system=template.system, user=prompt, options=options)

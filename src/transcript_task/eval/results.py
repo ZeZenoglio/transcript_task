@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from .metrics import percentile
 
@@ -48,7 +48,7 @@ class ClipResult:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ClipResult":
+    def from_dict(cls, data: dict) -> ClipResult:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
@@ -73,7 +73,7 @@ class BenchmarkResult:
     dataset: str = "fleurs"
     clips: list[ClipResult] = field(default_factory=list)
     generated_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
+        default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds")
     )
     settings_snapshot: dict[str, Any] = field(default_factory=dict)
     peak_rss_mb: float | None = None
@@ -101,11 +101,21 @@ class BenchmarkResult:
         }
 
     AGGREGATE_METRICS = (
-        "wer_raw", "wer_refined", "cer_raw", "cer_refined",
-        "semdist_raw", "semdist_refined", "content_recall", "length_ratio",
-        "asr_seconds", "refine_seconds", "summarize_seconds", "realtime_factor",
+        "wer_raw",
+        "wer_refined",
+        "cer_raw",
+        "cer_refined",
+        "semdist_raw",
+        "semdist_refined",
+        "content_recall",
+        "length_ratio",
+        "asr_seconds",
+        "refine_seconds",
+        "summarize_seconds",
+        "realtime_factor",
         "description_transcript_semdist",
-        "refine_tokens_per_second", "summarize_tokens_per_second",
+        "refine_tokens_per_second",
+        "summarize_tokens_per_second",
     )
 
     def aggregates(self) -> dict[str, dict[str, float | None]]:
@@ -180,7 +190,7 @@ class BenchmarkResult:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "BenchmarkResult":
+    def from_dict(cls, data: dict) -> BenchmarkResult:
         clips = [ClipResult.from_dict(c) for c in data.get("clips", [])]
         return cls(
             tier=data["tier"],
@@ -203,11 +213,11 @@ class BenchmarkResult:
 
     def markdown_table(self) -> str:
         lines = [
-            f"# Benchmark: {self.tag} ({self.dataset}/{self.tier}, n={self.n_clips}, seed={self.seed})",
+            f"# Benchmark: {self.tag} ({self.dataset}/{self.tier}, n={self.n_clips}, seed={self.seed})",  # noqa: E501
             "",
             f"- ASR model: `{self.asr_model}`",
             f"- LLM model: `{self.llm_model}`",
-            f"- Refine prompt: `{self.refine_prompt_id}` · Summarize prompt: `{self.summarize_prompt_id}`",
+            f"- Refine prompt: `{self.refine_prompt_id}` · Summarize prompt: `{self.summarize_prompt_id}`",  # noqa: E501
             f"- Generated: {self.generated_at}",
             f"- Errors: {self.n_errors}/{self.n_clips}",
             "",
@@ -227,13 +237,18 @@ class BenchmarkResult:
             lines.append(f"| {name} | {value:.4f} |" if value is not None else f"| {name} | — |")
 
         lines += [
-            "", "## Worst clips by WER (refined)", "",
+            "",
+            "## Worst clips by WER (refined)",
+            "",
             "| clip | duration | wer_refined | wer_raw | error |",
             "|---|---|---|---|---|",
         ]
         worst = sorted(
             (c for c in self.clips if c.wer_refined is not None),
-            key=lambda c: c.wer_refined, reverse=True,
+            # The filter above already guarantees non-None; cast rather than
+            # re-deriving it, since mypy can't see the generator's effect.
+            key=lambda c: cast(float, c.wer_refined),
+            reverse=True,
         )[:10]
         for c in worst:
             wer_raw = f"{c.wer_raw:.4f}" if c.wer_raw is not None else "—"

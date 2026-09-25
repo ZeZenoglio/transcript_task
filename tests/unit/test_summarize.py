@@ -1,8 +1,8 @@
 """Unit tests for the summarize stage (Phase 3): schema validation, the
 retry-then-fallback path, filename generation, and prompt rendering.
 
-All against a fake LLM client -- no Ollama required. The one exception is
-`test_summarize_transcript_against_real_ollama`, marked `integration`.
+All against a fake LLM client -- no Ollama required. See
+tests/integration/test_summarize_integration.py for the real-Ollama version.
 """
 
 from __future__ import annotations
@@ -10,9 +10,9 @@ from __future__ import annotations
 import json
 
 import pytest
+from fakes import FakeChatModel
 from pydantic import ValidationError
 
-from fakes import FakeChatModel
 from transcript_task.prompts import get_summarize_template
 from transcript_task.summarize import (
     TranscriptSummary,
@@ -39,6 +39,7 @@ def _json(d: dict) -> str:
 # ---------------------------------------------------------------------------
 # TranscriptSummary schema
 # ---------------------------------------------------------------------------
+
 
 class TestTranscriptSummarySchema:
     def test_valid_payload_parses(self):
@@ -82,12 +83,16 @@ class TestTranscriptSummarySchema:
 # summarize_transcript: happy path, retry, fallback
 # ---------------------------------------------------------------------------
 
+
 class TestSummarizeTranscript:
     def test_happy_path_returns_parsed_summary(self):
         model = FakeChatModel([_json(VALID_SUMMARY)])
         summary = summarize_transcript(
-            "transcrição bruta", "transcrição revista", model,
-            language="pt", options={},
+            "transcrição bruta",
+            "transcrição revista",
+            model,
+            language="pt",
+            options={},
         )
         assert summary.title == VALID_SUMMARY["title"]
         assert len(model.calls) == 1
@@ -100,7 +105,11 @@ class TestSummarizeTranscript:
     def test_retries_once_on_invalid_json_then_succeeds(self):
         model = FakeChatModel(["not valid json at all", _json(VALID_SUMMARY)])
         summary = summarize_transcript(
-            "raw", "refined", model, language="pt", options={},
+            "raw",
+            "refined",
+            model,
+            language="pt",
+            options={},
         )
         assert summary.title == VALID_SUMMARY["title"]
         assert len(model.calls) == 2
@@ -111,7 +120,11 @@ class TestSummarizeTranscript:
         bad = {**VALID_SUMMARY, "sensitivity": "extreme"}
         model = FakeChatModel([_json(bad), _json(VALID_SUMMARY)])
         summary = summarize_transcript(
-            "raw", "refined", model, language="pt", options={},
+            "raw",
+            "refined",
+            model,
+            language="pt",
+            options={},
         )
         assert summary.sensitivity == "medium"
         assert len(model.calls) == 2
@@ -119,7 +132,11 @@ class TestSummarizeTranscript:
     def test_falls_back_after_two_failures(self):
         model = FakeChatModel(["still not json", "also not json"])
         summary = summarize_transcript(
-            "raw", "refined", model, language="pt", options={},
+            "raw",
+            "refined",
+            model,
+            language="pt",
+            options={},
         )
         assert summary.confidence == "low"
         assert len(model.calls) == 2  # never a third attempt
@@ -127,7 +144,11 @@ class TestSummarizeTranscript:
     def test_falls_back_in_requested_language(self):
         model = FakeChatModel(["bad", "bad"])
         summary = summarize_transcript(
-            "raw", "refined", model, language="en", options={},
+            "raw",
+            "refined",
+            model,
+            language="en",
+            options={},
         )
         assert summary.title == TranscriptSummary.fallback("en").title
 
@@ -143,7 +164,11 @@ class TestSummarizeTranscript:
     def test_both_transcript_versions_reach_the_prompt(self):
         model = FakeChatModel([_json(VALID_SUMMARY)])
         summarize_transcript(
-            "RAW_MARKER_TEXT", "REFINED_MARKER_TEXT", model, language="pt", options={},
+            "RAW_MARKER_TEXT",
+            "REFINED_MARKER_TEXT",
+            model,
+            language="pt",
+            options={},
         )
         prompt = model.calls[0]["user"]
         assert "RAW_MARKER_TEXT" in prompt
@@ -153,6 +178,7 @@ class TestSummarizeTranscript:
 # ---------------------------------------------------------------------------
 # prompt templates
 # ---------------------------------------------------------------------------
+
 
 class TestPromptTemplates:
     def test_pt_and_en_templates_have_distinct_ids(self):
@@ -174,6 +200,7 @@ class TestPromptTemplates:
 # ---------------------------------------------------------------------------
 # slugify / docx_filename
 # ---------------------------------------------------------------------------
+
 
 class TestSlugify:
     def test_basic_slug(self):
@@ -216,45 +243,22 @@ class TestDocxFilename:
         assert name_b.startswith("id-two_")
 
     def test_anonymizes_title_by_default(self):
-        summary = TranscriptSummary.model_validate({
-            **VALID_SUMMARY, "title": "Chamada com Marta sobre dinheiro",
-        })
+        summary = TranscriptSummary.model_validate(
+            {
+                **VALID_SUMMARY,
+                "title": "Chamada com Marta sobre dinheiro",
+            }
+        )
         name = docx_filename("a1b2c3d4", summary)
         assert "marta" not in name.lower()
         assert name.startswith("a1b2c3d4_")
 
     def test_anonymize_false_keeps_the_real_name(self):
-        summary = TranscriptSummary.model_validate({
-            **VALID_SUMMARY, "title": "Chamada com Marta sobre dinheiro",
-        })
+        summary = TranscriptSummary.model_validate(
+            {
+                **VALID_SUMMARY,
+                "title": "Chamada com Marta sobre dinheiro",
+            }
+        )
         name = docx_filename("a1b2c3d4", summary, anonymize=False)
         assert "marta" in name.lower()
-
-
-# ---------------------------------------------------------------------------
-# integration: real Ollama
-# ---------------------------------------------------------------------------
-
-@pytest.mark.integration
-def test_summarize_transcript_against_real_ollama():
-    from transcript_task.refine import OllamaChatModel
-    from transcript_task.settings import Settings
-
-    settings = Settings()
-    try:
-        import ollama
-        ollama.list()
-    except Exception:
-        pytest.skip("Ollama is not reachable on this machine")
-
-    model = OllamaChatModel(settings.llm_model)
-    summary = summarize_transcript(
-        "Boa tarde. Só queria confirmar a hora da reunião de amanhã.",
-        "Boa tarde. Só queria confirmar a hora da reunião de amanhã.",
-        model,
-        language="pt",
-        options=settings.llm_options,
-    )
-    assert isinstance(summary, TranscriptSummary)
-    assert summary.title
-    assert summary.confidence in ("low", "medium", "high")

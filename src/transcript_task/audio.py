@@ -37,12 +37,23 @@ def probe(path: Path) -> AudioInfo:
     """
     try:
         out = subprocess.run(
-            ["ffprobe", "-v", "error",
-             "-select_streams", "a:0",
-             "-show_entries", "stream=codec_name,sample_rate,channels",
-             "-show_entries", "format=duration",
-             "-of", "json", str(path)],
-            capture_output=True, text=True, check=True,
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name,sample_rate,channels",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout
     except subprocess.CalledProcessError as exc:
         raise AudioError(exc.stderr.strip()[:200]) from exc
@@ -86,11 +97,23 @@ def convert_to_target(src: Path, dst: Path, settings: Settings) -> None:
     Raises AudioError on ffmpeg failure.
     """
     proc = subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-i", str(src),
-         "-ac", str(settings.target_channels),
-         "-ar", str(settings.target_sample_rate),
-         "-c:a", settings.target_codec, str(dst)],
-        capture_output=True, text=True,
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-ac",
+            str(settings.target_channels),
+            "-ar",
+            str(settings.target_sample_rate),
+            "-c:a",
+            settings.target_codec,
+            str(dst),
+        ],
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         raise AudioError(proc.stderr.strip()[:200])

@@ -2,8 +2,8 @@
 API server running. PLAN.md's Phase 9 testing note is explicit that
 Streamlit UIs resist deep automated testing -- this stays deliberately
 shallow (it doesn't run a real server or submit a real job; that's what
-tests/test_api.py's real end-to-end integration test already covers for
-the API side) rather than faking a false sense of UI coverage.
+tests/integration/test_api_integration.py's real end-to-end test already
+covers for the API side) rather than faking a false sense of UI coverage.
 
 `api_base_url` is pinned to a high, essentially-guaranteed-unused port
 rather than relying on the app's real default (`localhost:8000`) being
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-APP_PATH = str(Path(__file__).resolve().parents[1] / "frontend" / "app.py")
+APP_PATH = str(Path(__file__).resolve().parents[2] / "frontend" / "app.py")
 UNREACHABLE_URL = "http://127.0.0.1:59999"
 
 
@@ -66,7 +66,7 @@ def test_a_200_response_with_an_unexpected_shape_degrades_to_a_warning(monkeypat
     not crash the app with a KeyError."""
     import sys
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "frontend"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "frontend"))
     import httpx
 
     monkeypatch.setattr(

@@ -16,25 +16,25 @@ _LABELS = {
     "pt": {
         "topics": "Temas: ",
         "sensitivity_high": "⚠ Este documento pode conter informação sensível "
-                             "(pessoal, financeira, médica ou legal). Reveja antes de partilhar.",
+        "(pessoal, financeira, médica ou legal). Reveja antes de partilhar.",
         "sensitivity_medium": "⚠ Este documento pode conter informação privada. "
-                               "Reveja antes de partilhar.",
+        "Reveja antes de partilhar.",
         "low_confidence": "Resumo automático de baixa confiança — reveja o título e a descrição.",
         "refine_rejected": "⚠ A revisão automática foi descartada por falhar uma verificação de "
-                            "qualidade interna ({reason}: sobreposição de conteúdo {content_recall}, "
-                            "razão de comprimento {length_ratio}) — o texto abaixo é a transcrição "
-                            "bruta, sem correções.",
+        "qualidade interna ({reason}: sobreposição de conteúdo {content_recall}, "
+        "razão de comprimento {length_ratio}) — o texto abaixo é a transcrição "
+        "bruta, sem correções.",
     },
     "en": {
         "topics": "Topics: ",
         "sensitivity_high": "⚠ This document may contain sensitive information "
-                             "(personal, financial, medical, or legal). Review before sharing.",
+        "(personal, financial, medical, or legal). Review before sharing.",
         "sensitivity_medium": "⚠ This document may contain private information. "
-                               "Review before sharing.",
-        "low_confidence": "Low-confidence automatic summary — please review the title and description.",
+        "Review before sharing.",
+        "low_confidence": "Low-confidence automatic summary — please review the title and description.",  # noqa: E501
         "refine_rejected": "⚠ Automatic cleanup was discarded for failing an internal quality "
-                            "check ({reason}: content overlap {content_recall}, length ratio "
-                            "{length_ratio}) — the text below is the raw, uncorrected transcript.",
+        "check ({reason}: content overlap {content_recall}, length ratio "
+        "{length_ratio}) — the text below is the raw, uncorrected transcript.",
     },
 }
 
@@ -91,12 +91,17 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
     # time someone has the document open they're already looking at the full
     # transcript with real names in it two paragraphs down -- redacting the
     # abstract at that point would protect nothing and just read as broken.
-    meta_title, meta_description, meta_topics = None, None, []
+    meta_title: str | None = None
+    meta_description: str | None = None
+    meta_topics: list[str] = []
     if summary:
         if settings.anonymize_metadata:
             from .anonymize import redact_summary_fields
+
             meta_title, meta_description, meta_topics = redact_summary_fields(
-                summary["title"], summary["description"], summary.get("topics", []),
+                summary["title"],
+                summary["description"],
+                summary.get("topics", []),
                 language=settings.summary_language,
             )
         else:
@@ -105,12 +110,14 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
             meta_topics = summary.get("topics", [])
 
     doc = Document()
-    doc.core_properties.title = _truncated(meta_title if summary else f"Transcrição — {key}")
+    doc.core_properties.title = _truncated(
+        meta_title if meta_title is not None else f"Transcrição — {key}"
+    )
     doc.core_properties.comments = _truncated(f"Ficheiro de origem: {key}")
-    if summary:
+    if meta_description is not None:
         doc.core_properties.subject = _truncated(meta_description)
-        if meta_topics:
-            doc.core_properties.keywords = _truncated(", ".join(meta_topics))
+    if meta_topics:
+        doc.core_properties.keywords = _truncated(", ".join(meta_topics))
 
     doc.add_heading("Transcrição de Áudio", level=0)
 
@@ -122,7 +129,8 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
             banner_run = banner.add_run(labels[f"sensitivity_{summary['sensitivity']}"])
             banner_run.bold = True
             banner_run.font.color.rgb = (
-                RGBColor(0xB0, 0x00, 0x00) if summary["sensitivity"] == "high"
+                RGBColor(0xB0, 0x00, 0x00)
+                if summary["sensitivity"] == "high"
                 else RGBColor(0xB0, 0x70, 0x00)
             )
 
@@ -147,12 +155,15 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
     meta.add_run("Ficheiro de origem: ").bold = True
     meta.add_run(key)
     meta.add_run("\nDuração: ").bold = True
-    meta.add_run(human_duration(item["duration_seconds"])
-                 if item.get("duration_seconds") else "desconhecida")
+    meta.add_run(
+        human_duration(item["duration_seconds"]) if item.get("duration_seconds") else "desconhecida"
+    )
     meta.add_run("\nFormato original: ").bold = True
-    meta.add_run(f"{item.get('source_format', '?')} · "
-                 f"{item.get('source_sample_rate', '?')} Hz · "
-                 f"{item.get('source_channels', '?')} canal(is)")
+    meta.add_run(
+        f"{item.get('source_format', '?')} · "
+        f"{item.get('source_sample_rate', '?')} Hz · "
+        f"{item.get('source_channels', '?')} canal(is)"
+    )
     meta.add_run("\nModelo de transcrição: ").bold = True
     meta.add_run(settings.asr_model)
     meta.add_run("\nModelo de revisão: ").bold = True
@@ -165,7 +176,9 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
     meta.add_run(reviewer_line)
     if summary:
         meta.add_run("\nFalantes estimados: ").bold = True
-        meta.add_run(str(summary["speakers_detected"]) if summary["speakers_detected"] else "desconhecido")
+        meta.add_run(
+            str(summary["speakers_detected"]) if summary["speakers_detected"] else "desconhecido"
+        )
         meta.add_run("\nVariante detectada: ").bold = True
         meta.add_run(summary["language_variant"])
     meta.add_run("\nGerado em: ").bold = True
@@ -192,8 +205,9 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
         banner_run.font.color.rgb = RGBColor(0xB0, 0x70, 0x00)
         doc.add_paragraph()
 
-    doc.add_heading("Transcrição revista" if item.get("refined_transcript")
-                    else "Transcrição (bruta)", level=1)
+    doc.add_heading(
+        "Transcrição revista" if item.get("refined_transcript") else "Transcrição (bruta)", level=1
+    )
 
     for block in [b.strip() for b in body.split("\n") if b.strip()]:
         para = doc.add_paragraph(block)
@@ -223,4 +237,4 @@ def write_docx(key: str, item: dict, out_path: Path, settings: Settings) -> None
             run.font.size = Pt(9)
             run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
 
-    doc.save(out_path)
+    doc.save(str(out_path))

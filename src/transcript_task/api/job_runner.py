@@ -17,8 +17,8 @@ generate randomly is instead the job's own id (see PLAN.md's Phase 7 note:
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from ..asr import Transcriber
 from ..pipeline import stage_docx, stage_normalize, stage_refine, stage_summarize, stage_transcribe
@@ -43,10 +43,12 @@ def job_settings(base: Settings, job_id: str) -> Settings:
     """A per-job Settings with isolated tmp/output dirs, everything else
     inherited from the server's current configuration (base)."""
     job_dir = base.api_jobs_dir / job_id
-    return base.model_copy(update={
-        "tmp_dir": job_dir / "tmp",
-        "output_dir": job_dir / "output",
-    })
+    return base.model_copy(
+        update={
+            "tmp_dir": job_dir / "tmp",
+            "output_dir": job_dir / "output",
+        }
+    )
 
 
 def run_job(
@@ -70,6 +72,7 @@ def run_job(
     themselves (see pipeline.py); real callers leave them as None and let
     those stage functions construct the real ones.
     """
+
     def notify(status: JobStatus) -> None:
         if on_stage is not None:
             on_stage(status)

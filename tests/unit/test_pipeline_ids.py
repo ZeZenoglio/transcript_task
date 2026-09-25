@@ -32,10 +32,17 @@ class TestLoadStateMigration:
     def test_legacy_item_without_transcript_id_gets_one_assigned(self, tmp_path):
         settings = _settings(tmp_path)
         settings.output_dir.mkdir(parents=True)
-        settings.transcripts_json.write_text(json.dumps({
-            "generated_at": None, "asr_model": None, "llm_model": None,
-            "items": {"old-recording.m4a": {"raw_transcript": "texto"}},
-        }), encoding="utf-8")
+        settings.transcripts_json.write_text(
+            json.dumps(
+                {
+                    "generated_at": None,
+                    "asr_model": None,
+                    "llm_model": None,
+                    "items": {"old-recording.m4a": {"raw_transcript": "texto"}},
+                }
+            ),
+            encoding="utf-8",
+        )
 
         state = load_state(settings)
 
@@ -45,10 +52,17 @@ class TestLoadStateMigration:
     def test_item_that_already_has_an_id_keeps_it(self, tmp_path):
         settings = _settings(tmp_path)
         settings.output_dir.mkdir(parents=True)
-        settings.transcripts_json.write_text(json.dumps({
-            "generated_at": None, "asr_model": None, "llm_model": None,
-            "items": {"recording.m4a": {"transcript_id": "deadbeef"}},
-        }), encoding="utf-8")
+        settings.transcripts_json.write_text(
+            json.dumps(
+                {
+                    "generated_at": None,
+                    "asr_model": None,
+                    "llm_model": None,
+                    "items": {"recording.m4a": {"transcript_id": "deadbeef"}},
+                }
+            ),
+            encoding="utf-8",
+        )
 
         state = load_state(settings)
 

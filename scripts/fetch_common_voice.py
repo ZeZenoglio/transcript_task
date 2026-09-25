@@ -71,10 +71,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--out", type=Path, default=Path("data/common_voice_pt"),
-                     help="destination directory (default: data/common_voice_pt)")
-    ap.add_argument("--limit", type=int, default=None,
-                     help="only fetch the first N rows, for a quick check")
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=Path("data/common_voice_pt"),
+        help="destination directory (default: data/common_voice_pt)",
+    )
+    ap.add_argument(
+        "--limit", type=int, default=None, help="only fetch the first N rows, for a quick check"
+    )
     args = ap.parse_args()
 
     from huggingface_hub import hf_hub_download
@@ -86,7 +91,9 @@ def main() -> None:
 
     print(f"Fetching transcript/{CONFIG}/{SPLIT}.tsv from {REPO} @ {REVISION[:12]}...")
     tsv_path = hf_hub_download(
-        repo_id=REPO, repo_type="dataset", revision=REVISION,
+        repo_id=REPO,
+        repo_type="dataset",
+        revision=REVISION,
         filename=f"transcript/{CONFIG}/{SPLIT}.tsv",
     )
     with open(tsv_path, encoding="utf-8") as f:
@@ -101,7 +108,9 @@ def main() -> None:
     # --limit still downloads what streaming can't avoid.
     print(f"Fetching audio/{CONFIG}/{SPLIT}/{TAR_MEMBER_PREFIX}.tar (~292MB, one-time)...")
     tar_path = hf_hub_download(
-        repo_id=REPO, repo_type="dataset", revision=REVISION,
+        repo_id=REPO,
+        repo_type="dataset",
+        revision=REVISION,
         filename=f"audio/{CONFIG}/{SPLIT}/{TAR_MEMBER_PREFIX}.tar",
     )
 

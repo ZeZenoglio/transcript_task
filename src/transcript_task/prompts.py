@@ -123,8 +123,7 @@ def get_refine_template(prompt_id: str) -> PromptTemplate:
         return REFINE_PROMPT_TEMPLATES[prompt_id]
     except KeyError:
         raise ValueError(
-            f"No refine prompt with id {prompt_id!r}; "
-            f"available: {sorted(REFINE_PROMPT_TEMPLATES)}"
+            f"No refine prompt with id {prompt_id!r}; available: {sorted(REFINE_PROMPT_TEMPLATES)}"
         ) from None
 
 

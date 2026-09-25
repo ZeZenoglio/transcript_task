@@ -12,12 +12,16 @@ from dataclasses import dataclass, field
 import jiwer
 
 from ..summarize import TranscriptSummary
+
 # content_recall/length_ratio live in text_compare.py, not here, so the
 # production pipeline can use them as a runtime guard (see pipeline.py's
 # stage_refine) without importing this module's jiwer/embeddings deps.
 # Re-imported here (not redefined) so existing `eval.metrics` callers and
-# tests keep working unchanged.
-from ..text_compare import content_recall, length_ratio, normalize_pt
+# tests keep working unchanged -- the `as`-aliases are the standard
+# explicit-re-export idiom, so ruff's unused-import check doesn't strip them.
+from ..text_compare import content_recall as content_recall
+from ..text_compare import length_ratio as length_ratio
+from ..text_compare import normalize_pt
 from .embeddings import Embedder
 
 
@@ -92,6 +96,7 @@ def refine_delta(ground_truth: str, raw_transcript: str, refined_transcript: str
 # ---------------------------------------------------------------------------
 # Summary-stage metrics -- deterministic only, per PLAN.md decision #6.
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class SummaryMetrics:
@@ -180,6 +185,7 @@ def slug_uniqueness(filenames: list[str]) -> float:
 # ---------------------------------------------------------------------------
 # Performance metrics -- every stage.
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class StageTiming:

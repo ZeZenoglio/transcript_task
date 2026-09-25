@@ -15,7 +15,14 @@ from .results import BenchmarkResult
 
 # Metrics where an *increase* from baseline to candidate is a regression.
 # WER/CER: lower is better. semdist: lower (closer meaning) is better.
-_LOWER_IS_BETTER = ("wer_raw", "wer_refined", "cer_raw", "cer_refined", "semdist_raw", "semdist_refined")
+_LOWER_IS_BETTER = (
+    "wer_raw",
+    "wer_refined",
+    "cer_raw",
+    "cer_refined",
+    "semdist_raw",
+    "semdist_refined",
+)
 
 
 @dataclass
@@ -49,8 +56,7 @@ class ComparisonResult:
         for d in self.diffs:
             flag = "YES" if d.regressed else ""
             lines.append(
-                f"| {d.metric} | {d.baseline:.4f} | {d.candidate:.4f} | "
-                f"{d.delta:+.4f} | {flag} |"
+                f"| {d.metric} | {d.baseline:.4f} | {d.candidate:.4f} | {d.delta:+.4f} | {flag} |"
             )
         return "\n".join(lines) + "\n"
 
@@ -78,12 +84,19 @@ def compare_runs(
         if base_mean is None or cand_mean is None:
             continue
         delta = cand_mean - base_mean
-        diffs.append(MetricDiff(
-            metric=metric, baseline=base_mean, candidate=cand_mean,
-            delta=delta, regressed=delta > threshold,
-        ))
+        diffs.append(
+            MetricDiff(
+                metric=metric,
+                baseline=base_mean,
+                candidate=cand_mean,
+                delta=delta,
+                regressed=delta > threshold,
+            )
+        )
 
     return ComparisonResult(
-        baseline_tag=baseline.tag, candidate_tag=candidate.tag,
-        threshold=threshold, diffs=diffs,
+        baseline_tag=baseline.tag,
+        candidate_tag=candidate.tag,
+        threshold=threshold,
+        diffs=diffs,
     )

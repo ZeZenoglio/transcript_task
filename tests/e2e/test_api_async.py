@@ -35,7 +35,8 @@ def api_env(tmp_path, monkeypatch):
     reset_engine_for_tests()
 
     monkeypatch.setattr(
-        app_module, "create_worker",
+        app_module,
+        "create_worker",
         lambda settings: app_module.JobWorker(
             settings, transcriber=FakeTranscriber([]), chat_model=FakeChatModel([])
         ),

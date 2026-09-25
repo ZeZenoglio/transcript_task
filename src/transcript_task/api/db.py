@@ -11,8 +11,8 @@ same short id.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Session, SQLModel, create_engine
@@ -21,10 +21,10 @@ from ..settings import Settings
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     queued = "queued"
     normalizing = "normalizing"
     transcribing = "transcribing"
@@ -39,7 +39,7 @@ class JobStatus(str, Enum):
 TERMINAL_STATUSES = frozenset({JobStatus.done, JobStatus.failed, JobStatus.canceled})
 
 
-class BenchmarkStatus(str, Enum):
+class BenchmarkStatus(StrEnum):
     running = "running"
     done = "done"
     failed = "failed"
@@ -96,6 +96,7 @@ class ConfigHistory(SQLModel, table=True):
     `snapshot` is the *full* resulting config, which is what lets the
     server reconstruct its current settings on restart by just reading the
     latest row rather than replaying every change ever made."""
+
     id: int | None = Field(default=None, primary_key=True)
     changed_at: datetime = Field(default_factory=_now)
     changes: dict = Field(sa_column=Column(JSON))  # {"field": {"from": ..., "to": ...}}

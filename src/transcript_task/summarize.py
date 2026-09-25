@@ -60,7 +60,7 @@ class TranscriptSummary(BaseModel):
         return cleaned if cleaned else v.strip()
 
     @classmethod
-    def fallback(cls, language: str = "pt") -> "TranscriptSummary":
+    def fallback(cls, language: str = "pt") -> TranscriptSummary:
         """A safe stand-in when the model can't produce a valid summary.
 
         `sensitivity` defaults to "medium", not "low": if we don't actually
@@ -105,8 +105,8 @@ def summarize_transcript(
         retry_note = (
             f"\n\nA resposta anterior não é um JSON válido conforme o schema pedido "
             f"(erro: {first_error}). Responde novamente APENAS com um objeto JSON válido."
-            if language == "pt" else
-            f"\n\nYour previous response was not valid JSON matching the requested "
+            if language == "pt"
+            else f"\n\nYour previous response was not valid JSON matching the requested "
             f"schema (error: {first_error}). Respond again with ONLY a valid JSON object."
         )
         retry_response = model.chat(

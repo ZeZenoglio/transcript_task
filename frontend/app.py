@@ -20,7 +20,6 @@ import time
 from pathlib import Path
 
 import streamlit as st
-
 from api_client import ApiClient, ApiError
 from helpers import (
     docx_download_filename,
@@ -80,8 +79,9 @@ def render_sidebar() -> None:
         # A 200 response that doesn't look like this API's health check
         # degrades to a warning instead of a KeyError crash.
         if not isinstance(health, dict) or "asr_model" not in health:
-            st.warning("Got a response, but it doesn't look like the transcript_task API -- "
-                       "check the URL.")
+            st.warning(
+                "Got a response, but it doesn't look like the transcript_task API -- check the URL."
+            )
             return
         if health.get("status") == "ok":
             st.success("API reachable")
@@ -104,14 +104,18 @@ def render_upload_screen() -> None:
 
     uploaded = st.file_uploader("Audio file", type=st.session_state.get("audio_extensions"))
     refine = st.checkbox(
-        "Clean up with the LLM (refine)", value=True,
+        "Clean up with the LLM (refine)",
+        value=True,
         help="If off, you'll only get the raw ASR transcript -- faster, no LLM cost.",
     )
 
     if st.button("Transcribe", type="primary", disabled=uploaded is None):
         job_id = _api_call(
-            "Submitting the recording", _client().submit_job,
-            uploaded.name, uploaded.getvalue(), refine,
+            "Submitting the recording",
+            _client().submit_job,
+            uploaded.name,
+            uploaded.getvalue(),
+            refine,
         )
         if job_id is not None:
             logger.info("submitted job %s (%s, refine=%s)", job_id, uploaded.name, refine)
@@ -166,15 +170,18 @@ def render_result_screen(job_id: str, job: dict) -> None:
     else:
         view = "Raw"
         if result.get("refine_rejected"):
-            st.info("The automatic cleanup was skipped by an internal quality check -- "
-                    "showing the raw transcript.")
+            st.info(
+                "The automatic cleanup was skipped by an internal quality check -- "
+                "showing the raw transcript."
+            )
     st.text_area("Transcript", pick_transcript(result, view.lower()), height=300)
 
     if result.get("docx_available"):
         docx_bytes = _api_call("Fetching the document", _client().get_docx, job_id)
         if docx_bytes is not None:
             st.download_button(
-                "Download .docx", data=docx_bytes,
+                "Download .docx",
+                data=docx_bytes,
                 file_name=docx_download_filename(job),
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )

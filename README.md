@@ -357,10 +357,22 @@ protocol as `refine.py`.
 
 ## Testing
 
-```bash
-uv run pytest              # fast unit tests, no network or models required
-uv run pytest -m integration   # also exercises the real local Ollama model
 ```
+tests/unit/          fast, no network, no models -- the bulk
+tests/eval/          eval-harness metric correctness against fakes (same fast/offline profile as unit)
+tests/integration/   real Ollama + real mlx-whisper; slower, opt-in, skips itself if unreachable
+tests/e2e/           the full FastAPI app in-process: upload -> poll -> docx out (fakes for ASR/LLM)
+```
+
+```bash
+uv run pytest                    # unit + eval tiers only -- fast, offline, the default
+uv run pytest -m e2e             # the full API lifecycle, still fake models, still fast
+uv run pytest -m integration     # real Ollama + real mlx-whisper; skips if Ollama isn't reachable
+uv run pytest -m "unit or e2e or integration" --cov=src/transcript_task --cov-report=term-missing
+```
+
+A test's tier marker (`unit`/`e2e`/`integration`) is applied automatically from
+which directory it lives in (`tests/conftest.py`), not hand-decorated per file.
 
 Unit tests fake the LLM client (`tests/fakes.py`) so schema validation, the
 retry-then-fallback path, and filename generation all run in milliseconds with
@@ -369,10 +381,24 @@ rather than a fake, since its actual entity-recognition behaviour is the thing
 under test. `audio.py`'s tests run against four real, diverse, public-domain
 speech clips (see below) rather than only synthetic tones, precisely because
 real content has repeatedly caught bugs synthetic fixtures didn't (see the
-next section). Two `integration`-marked tests call real local models and skip
+next section). Three `integration`-marked tests call real local models and skip
 themselves if Ollama isn't reachable: one exercises `summarize_transcript`
-directly, the other runs a full clip through the real ASR + LLM pipeline via
-the eval harness below and checks the resulting WER against ground truth.
+directly, one runs a full clip through the real ASR + LLM pipeline via the eval
+harness below and checks the resulting WER against ground truth, and one drives
+that same real pipeline through the actual HTTP API (upload, poll, download
+the real .docx) rather than calling pipeline functions directly.
+
+Coverage sits at ~90% on `src/`, above the ~80% target, with an honest
+exception carved out for thin wrappers around a real model call
+(`asr.py`, excluded from the coverage config) and for `pipeline.py`'s CLI
+entrypoint (`main()`/argparse), which is exercised by real manual runs against
+real recordings rather than an automated test.
+
+```bash
+uv run ruff check .    # lint
+uv run ruff format .   # format (replaces black/isort)
+uv run mypy src/       # type check
+```
 
 ## Benchmark dataset
 
@@ -640,7 +666,7 @@ easily hold 32-bit float PCM as 16-bit (FLEURS' own files do — see the
 benchmark dataset section above), and a version of this check that only
 compared sample rate and channel count would silently skip re-encoding a
 float32 file. Caught by testing against a real FLEURS clip, not a synthetic
-one, and now covered by a regression test in `tests/test_audio.py`.
+one, and now covered by a regression test in `tests/unit/test_audio.py`.
 macOS `__MACOSX/._*` resource-fork entries are skipped during zip extraction —
 they share the real files' extensions but contain no audio.
 

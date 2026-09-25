@@ -32,7 +32,9 @@ DEFAULT_TRACKING_DIR = "mlruns"
 DEFAULT_ARTIFACTS_DIR = "benchmarks"
 
 
-def write_local_artifacts(result: BenchmarkResult, out_dir: Path, interpretation: str | None = None) -> Path:
+def write_local_artifacts(
+    result: BenchmarkResult, out_dir: Path, interpretation: str | None = None
+) -> Path:
     """Write the fallback/companion local artifacts: results.json (the full
     round-trippable object, used by `compare`), table.md (the same thing a
     human or MLflow would see), and interpretation.md if provided.
@@ -83,25 +85,28 @@ def log_run(
 
     interpretation_text = (
         write_interpretation(result, interpretation_model)
-        if interpretation_model is not None else None
+        if interpretation_model is not None
+        else None
     )
     local_dir = write_local_artifacts(
         result, Path(DEFAULT_ARTIFACTS_DIR), interpretation=interpretation_text
     )
 
     with mlflow.start_run(run_name=result.tag) as run:
-        mlflow.log_params({
-            "dataset": result.dataset,
-            "tier": result.tier,
-            "seed": result.seed,
-            "asr_model": result.asr_model,
-            "llm_model": result.llm_model,
-            "refine_prompt_id": result.refine_prompt_id,
-            "summarize_prompt_id": result.summarize_prompt_id,
-            "summary_language": result.summary_language,
-            "n_clips": result.n_clips,
-            **{f"settings.{k}": v for k, v in result.settings_snapshot.items()},
-        })
+        mlflow.log_params(
+            {
+                "dataset": result.dataset,
+                "tier": result.tier,
+                "seed": result.seed,
+                "asr_model": result.asr_model,
+                "llm_model": result.llm_model,
+                "refine_prompt_id": result.refine_prompt_id,
+                "summarize_prompt_id": result.summarize_prompt_id,
+                "summary_language": result.summary_language,
+                "n_clips": result.n_clips,
+                **{f"settings.{k}": v for k, v in result.settings_snapshot.items()},
+            }
+        )
         mlflow.log_metrics(result.flat_metrics())
         mlflow.log_artifact(str(local_dir / "results.json"))
         mlflow.log_artifact(str(local_dir / "table.md"))
@@ -121,7 +126,9 @@ def log_comparison(
     mlflow.set_tracking_uri(f"file:{tracking_dir}")
     mlflow.set_experiment(experiment_name)
 
-    with mlflow.start_run(run_name=f"compare-{comparison.baseline_tag}-{comparison.candidate_tag}") as run:
+    with mlflow.start_run(
+        run_name=f"compare-{comparison.baseline_tag}-{comparison.candidate_tag}"
+    ) as run:
         mlflow.log_param("baseline_tag", comparison.baseline_tag)
         mlflow.log_param("candidate_tag", comparison.candidate_tag)
         mlflow.log_param("threshold", comparison.threshold)

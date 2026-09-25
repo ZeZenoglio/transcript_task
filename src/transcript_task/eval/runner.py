@@ -133,12 +133,17 @@ def evaluate_clip(
         try:
             started = time.time()
             refined_transcript = refine_transcript(
-                raw_transcript, chat_model, get_refine_template(settings.refine_prompt_id), settings.llm_options
+                raw_transcript,
+                chat_model,
+                get_refine_template(settings.refine_prompt_id),
+                settings.llm_options,
             )
             result.refine_seconds = time.time() - started
             result.refine_completion_tokens = _completion_tokens(chat_model)
             if result.refine_completion_tokens is not None and result.refine_seconds > 0:
-                result.refine_tokens_per_second = result.refine_completion_tokens / result.refine_seconds
+                result.refine_tokens_per_second = (
+                    result.refine_completion_tokens / result.refine_seconds
+                )
         except Exception as exc:  # noqa: BLE001
             result.error = f"refine failed: {exc}"
             refined_transcript = None
@@ -156,12 +161,16 @@ def evaluate_clip(
     try:
         started = time.time()
         summary = summarize_transcript(
-            raw_transcript, refined_transcript or raw_transcript, counting_model,
-            language=settings.summary_language, options=settings.llm_options,
+            raw_transcript,
+            refined_transcript or raw_transcript,
+            counting_model,
+            language=settings.summary_language,
+            options=settings.llm_options,
         )
         result.summarize_seconds = time.time() - started
         total_completion = sum(
-            u["completion_tokens"] for u in counting_model.usages
+            u["completion_tokens"]
+            for u in counting_model.usages
             if u and u.get("completion_tokens") is not None
         )
         if total_completion:
@@ -171,7 +180,9 @@ def evaluate_clip(
     except Exception as exc:  # noqa: BLE001
         result.error = (result.error + "; " if result.error else "") + f"summarize failed: {exc}"
 
-    used_fallback = summary is not None and summary == TranscriptSummary.fallback(settings.summary_language)
+    used_fallback = summary is not None and summary == TranscriptSummary.fallback(
+        settings.summary_language
+    )
     used_retry = counting_model.call_count >= 2
 
     summary_metrics = evaluate_summary(
@@ -192,8 +203,10 @@ def evaluate_clip(
 
     if summary is not None:
         result.docx_filename = docx_filename(
-            new_transcript_id(), summary,
-            language=settings.summary_language, anonymize=settings.anonymize_metadata,
+            new_transcript_id(),
+            summary,
+            language=settings.summary_language,
+            anonymize=settings.anonymize_metadata,
         )
 
     return result

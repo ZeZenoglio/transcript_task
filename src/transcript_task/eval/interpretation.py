@@ -54,6 +54,5 @@ def write_interpretation(result: BenchmarkResult, model) -> str:
         )
     except Exception as exc:  # noqa: BLE001 - interpretation is best-effort
         return (
-            "_Interpretação automática indisponível "
-            f"(falha ao contactar o modelo local: {exc})._\n"
+            f"_Interpretação automática indisponível (falha ao contactar o modelo local: {exc})._\n"
         )

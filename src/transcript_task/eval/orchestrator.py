@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
+from typing import TypedDict
 
 from ..asr import MlxWhisperTranscriber
 from ..prompts import get_summarize_template
@@ -22,12 +23,22 @@ from .results import BenchmarkResult, ClipResult
 from .runner import evaluate_clip, peak_rss_mb
 from .tiers import DEFAULT_QUICK_N, DEFAULT_SEED, select_tier
 
+
 # Each entry is self-contained: full split (for quick/full tiers, fetched
 # separately) and the small committed smoke set (for CI/no-download runs).
 # expected_language_variant feeds evaluate_clip's summary-conformance check
 # (see summarize.TranscriptSummary.language_variant) -- None means "don't
 # assert," for a dataset whose clips don't share one known variant.
-DATASETS = {
+class DatasetConfig(TypedDict):
+    full_manifest: Path
+    full_audio_root: Path
+    smoke_manifest: Path
+    smoke_audio_root: Path
+    expected_language_variant: str | None
+    fetch_hint: str
+
+
+DATASETS: dict[str, DatasetConfig] = {
     "fleurs": {
         "full_manifest": PROJECT_ROOT / "data" / "fleurs_pt" / "manifest.jsonl",
         "full_audio_root": PROJECT_ROOT / "data" / "fleurs_pt",
@@ -62,7 +73,9 @@ class DatasetNotFetched(Exception):
 def load_manifest(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 def run_benchmark_tier(
@@ -101,7 +114,9 @@ def run_benchmark_tier(
         raise DatasetNotFetched(dataset)
 
     clips = select_tier(full_manifest, smoke_manifest, tier, n=n, seed=seed)
-    audio_root = dataset_cfg["smoke_audio_root"] if tier == "smoke" else dataset_cfg["full_audio_root"]
+    audio_root = (
+        dataset_cfg["smoke_audio_root"] if tier == "smoke" else dataset_cfg["full_audio_root"]
+    )
 
     transcriber = transcriber or MlxWhisperTranscriber(settings.asr_model)
     chat_model = chat_model or OllamaChatModel(settings.llm_model)
@@ -112,7 +127,13 @@ def run_benchmark_tier(
         tmp_dir = Path(tmp)
         for i, clip in enumerate(clips, start=1):
             result = evaluate_clip(
-                clip, audio_root, settings, transcriber, chat_model, embedder, tmp_dir,
+                clip,
+                audio_root,
+                settings,
+                transcriber,
+                chat_model,
+                embedder,
+                tmp_dir,
                 expected_language_variant=dataset_cfg["expected_language_variant"],
                 skip_refine=skip_refine,
             )
@@ -155,7 +176,8 @@ def run_benchmark_tier(
 
         interpretation_text = (
             write_interpretation(benchmark_result, interpretation_model)
-            if interpretation_model is not None else None
+            if interpretation_model is not None
+            else None
         )
         write_local_artifacts(
             benchmark_result, Path(DEFAULT_ARTIFACTS_DIR), interpretation=interpretation_text

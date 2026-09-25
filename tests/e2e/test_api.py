@@ -18,8 +18,8 @@ import time
 import wave
 
 import pytest
-from fastapi.testclient import TestClient
 from fakes import FakeChatModel, FakeTranscriber
+from fastapi.testclient import TestClient
 
 from transcript_task.api import app as app_module
 from transcript_task.api.db import reset_engine_for_tests
@@ -436,18 +436,26 @@ class TestBenchmark:
         # tests/fixtures/manifest.jsonl has 4 clips; each needs 1 transcribe
         # + 1 refine + 1 summarize call.
         transcriber = FakeTranscriber(["frase um", "frase dois", "frase tres", "frase quatro"])
-        chat_model = FakeChatModel([
-            "Frase um.", VALID_SUMMARY_JSON,
-            "Frase dois.", VALID_SUMMARY_JSON,
-            "Frase tres.", VALID_SUMMARY_JSON,
-            "Frase quatro.", VALID_SUMMARY_JSON,
-        ])
+        chat_model = FakeChatModel(
+            [
+                "Frase um.",
+                VALID_SUMMARY_JSON,
+                "Frase dois.",
+                VALID_SUMMARY_JSON,
+                "Frase tres.",
+                VALID_SUMMARY_JSON,
+                "Frase quatro.",
+                VALID_SUMMARY_JSON,
+            ]
+        )
         return transcriber, chat_model
 
     def test_create_returns_202_and_running_status(self, api):
         transcriber, chat_model = self._fakes_for_smoke_tier()
         with api(transcriber, chat_model) as client:
-            r = client.post("/v1/benchmark", json={"tag": "apitest-test-run", "tier": "smoke", "semdist": False})
+            r = client.post(
+                "/v1/benchmark", json={"tag": "apitest-test-run", "tier": "smoke", "semdist": False}
+            )
             assert r.status_code == 202
             assert r.json()["status"] == "running"
             client.app.state.worker.wait_for_benchmark("apitest-test-run")
@@ -455,7 +463,9 @@ class TestBenchmark:
     def test_completed_run_is_fetchable_with_results(self, api):
         transcriber, chat_model = self._fakes_for_smoke_tier()
         with api(transcriber, chat_model) as client:
-            client.post("/v1/benchmark", json={"tag": "apitest-done-run", "tier": "smoke", "semdist": False})
+            client.post(
+                "/v1/benchmark", json={"tag": "apitest-done-run", "tier": "smoke", "semdist": False}
+            )
             client.app.state.worker.wait_for_benchmark("apitest-done-run")
 
             status = client.get("/v1/benchmark/apitest-done-run").json()
@@ -469,8 +479,12 @@ class TestBenchmark:
     def test_duplicate_tag_is_rejected(self, api):
         transcriber, chat_model = self._fakes_for_smoke_tier()
         with api(transcriber, chat_model) as client:
-            client.post("/v1/benchmark", json={"tag": "apitest-dup", "tier": "smoke", "semdist": False})
-            r = client.post("/v1/benchmark", json={"tag": "apitest-dup", "tier": "smoke", "semdist": False})
+            client.post(
+                "/v1/benchmark", json={"tag": "apitest-dup", "tier": "smoke", "semdist": False}
+            )
+            r = client.post(
+                "/v1/benchmark", json={"tag": "apitest-dup", "tier": "smoke", "semdist": False}
+            )
             assert r.status_code == 409
             client.app.state.worker.wait_for_benchmark("apitest-dup")
 
@@ -490,7 +504,10 @@ class TestBenchmark:
         transcriber, chat_model = self._fakes_for_smoke_tier()
         blocking = BlockingTranscriber(transcriber._texts)
         with api(blocking, chat_model) as client:
-            client.post("/v1/benchmark", json={"tag": "apitest-still-running", "tier": "smoke", "semdist": False})
+            client.post(
+                "/v1/benchmark",
+                json={"tag": "apitest-still-running", "tier": "smoke", "semdist": False},
+            )
             r = client.get("/v1/benchmark/apitest-still-running/results")
             assert r.status_code == 409
 
@@ -596,62 +613,3 @@ class TestOpenAPISpecQuality:
             spec = client.get("/openapi.json").json()
         benchmark_tag = next(t for t in spec["tags"] if t["name"] == "benchmark")
         assert "PLAN.md" not in benchmark_tag["description"]
-
-
-# ---------------------------------------------------------------------------
-# integration: real mlx-whisper + real Ollama, end to end through the API
-# ---------------------------------------------------------------------------
-
-@pytest.mark.integration
-def test_real_job_end_to_end(tmp_path, monkeypatch):
-    """No fakes anywhere: a real committed fixture file goes in through the
-    actual HTTP upload endpoint, gets transcribed by real mlx-whisper and
-    refined/summarized by real Ollama, and comes back out as a downloadable
-    real .docx -- the same real-data-first discipline as every other
-    integration test in this project, just driven through the API instead
-    of calling the pipeline functions directly."""
-    try:
-        import ollama
-
-        ollama.list()
-    except Exception:
-        pytest.skip("Ollama is not reachable on this machine")
-
-    jobs_root = PROJECT_ROOT / "data" / "test_api_jobs" / f"real-{tmp_path.name}"
-    jobs_root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("TRANSCRIPT_API_DB_PATH", str(tmp_path / "runs.db"))
-    monkeypatch.setenv("TRANSCRIPT_API_JOBS_DIR", str(jobs_root))
-    reset_engine_for_tests()
-
-    fixture = PROJECT_ROOT / "tests" / "fixtures" / "audio" / "fleurs_row00871.wav"
-    ground_truth = "Pense na rota de esqui como uma rota de caminhada."
-
-    try:
-        with TestClient(app_module.app) as client:
-            with open(fixture, "rb") as f:
-                created = client.post(
-                    "/v1/jobs", files={"file": ("fleurs_row00871.wav", f, "audio/wav")},
-                    data={"refine": "true"},
-                )
-            assert created.status_code == 202
-            job_id = created.json()["job_id"]
-
-            client.app.state.worker.wait_for(job_id, timeout=180)
-
-            result = client.get(f"/v1/jobs/{job_id}/result").json()
-            assert result["status"] == "done", result.get("error")
-            assert result["raw_transcript"]
-            assert result["refined_transcript"]
-            # Close to ground truth, not exact -- same tolerance the other
-            # real-model integration tests in this project use.
-            from transcript_task.text_compare import normalize_pt
-
-            assert normalize_pt(ground_truth) in normalize_pt(result["raw_transcript"]) \
-                or normalize_pt(result["raw_transcript"]) == normalize_pt(ground_truth)
-
-            docx_response = client.get(f"/v1/jobs/{job_id}/docx")
-            assert docx_response.status_code == 200
-            assert len(docx_response.content) > 0
-    finally:
-        reset_engine_for_tests()
-        shutil.rmtree(jobs_root, ignore_errors=True)

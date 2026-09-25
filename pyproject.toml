@@ -34,17 +34,74 @@ packages = ["src/transcript_task"]
 
 [dependency-groups]
 dev = [
+    "mypy>=1.19.1",
     "pytest>=9.1.1",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.5",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# tests/{unit,eval}/, tests/integration/, tests/e2e/ -- see Phase 10 in
+# PLAN.md. `pythonpath` keeps `from fakes import ...` working from any of
+# those subdirectories without turning tests/ into a package.
+pythonpath = ["tests"]
 markers = [
+    "unit: fast, no network, no models -- the default tier (includes tests/eval/).",
     "integration: hits a real local service (Ollama, mlx-whisper); slower, opt-in.",
+    "e2e: drives the full FastAPI app (upload -> poll -> docx) in-process; fakes for ASR/LLM.",
+    "slow: takes noticeably longer than the rest of its tier; none currently qualify.",
 ]
-# Default `pytest` run stays fast and offline; opt into integration explicitly
-# with `pytest -m integration` (see Phase 10 for the full test-tier layout).
-addopts = "-m 'not integration'"
+# Default `pytest` run is unit-tier only, so it stays fast and offline; opt
+# into the others explicitly, e.g. `pytest -m e2e` or `pytest -m integration`.
+# tests/conftest.py applies these markers automatically by directory.
+addopts = "-m unit"
+
+[tool.coverage.run]
+source = ["src/transcript_task"]
+omit = [
+    # Thin wrappers around a real model call -- there's nothing to unit-test
+    # beyond "does it call the SDK/CLI with the right arguments", which the
+    # real-model integration tests already exercise end to end (PLAN.md
+    # Phase 10: "~80% on src/, with the honest exception of thin
+    # model-call wrappers").
+    "src/transcript_task/asr.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+# Ruff formats fenced ```python blocks inside .md files too -- not wanted
+# here, since PLAN.md/README.md's code blocks are illustrative prose, not
+# real source under lint/format control.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Long lines here are prose inside multi-line docstrings/prompt-template
+# strings (CLI usage examples, the Portuguese refine/summarize instructions
+# sent to the LLM) -- a trailing `# noqa` isn't even syntactically possible
+# mid-string, and mechanically wrapping natural-language sentences (or a
+# prompt an LLM is actually fed) for a line-length rule would be pure churn
+# at best and a real behavior risk at worst.
+"scripts/fetch_common_voice.py" = ["E501"]
+"scripts/fetch_dataset.py" = ["E501"]
+"src/transcript_task/pipeline.py" = ["E501"]
+"src/transcript_task/prompts.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+check_untyped_defs = true
 
 [tool.uv.sources]
 pt-core-news-sm = { url = "https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.8.0/pt_core_news_sm-3.8.0-py3-none-any.whl" }

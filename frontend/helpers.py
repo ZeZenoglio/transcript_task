@@ -7,7 +7,13 @@ unit-tested" (Streamlit UIs themselves resist deep automated testing).
 from __future__ import annotations
 
 STAGE_ORDER = (
-    "queued", "normalizing", "transcribing", "refining", "summarizing", "writing_docx", "done",
+    "queued",
+    "normalizing",
+    "transcribing",
+    "refining",
+    "summarizing",
+    "writing_docx",
+    "done",
 )
 TERMINAL_STATUSES = frozenset({"done", "failed", "canceled"})
 
@@ -49,8 +55,10 @@ def sensitivity_banner(summary: dict | None) -> str | None:
     covers both "medium" and "high"; this demo follows the plan's wording
     literally rather than silently widening scope."""
     if summary and summary.get("sensitivity") == "high":
-        return ("⚠ This recording may contain sensitive information (personal, "
-                "financial, medical, or legal). Review before sharing.")
+        return (
+            "⚠ This recording may contain sensitive information (personal, "
+            "financial, medical, or legal). Review before sharing."
+        )
     return None
 
 

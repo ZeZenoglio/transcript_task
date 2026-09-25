@@ -46,32 +46,34 @@ def configure_logging(settings: Settings) -> None:
         cache_logger_on_first_use=True,
     )
 
-    logging.config.dictConfig({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "json": {
-                "()": structlog.stdlib.ProcessorFormatter,
-                "processor": structlog.processors.JSONRenderer(),
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "json": {
+                    "()": structlog.stdlib.ProcessorFormatter,
+                    "processor": structlog.processors.JSONRenderer(),
+                },
+                "console": {
+                    "()": structlog.stdlib.ProcessorFormatter,
+                    "processor": structlog.dev.ConsoleRenderer(),
+                },
             },
-            "console": {
-                "()": structlog.stdlib.ProcessorFormatter,
-                "processor": structlog.dev.ConsoleRenderer(),
+            "handlers": {
+                "file": {
+                    "class": "logging.FileHandler",
+                    "filename": str(log_path),
+                    "formatter": "json",
+                },
+                "console": {
+                    "class": "logging.StreamHandler",
+                    "formatter": "console",
+                },
             },
-        },
-        "handlers": {
-            "file": {
-                "class": "logging.FileHandler",
-                "filename": str(log_path),
-                "formatter": "json",
-            },
-            "console": {
-                "class": "logging.StreamHandler",
-                "formatter": "console",
-            },
-        },
-        "root": {"handlers": ["file", "console"], "level": "INFO"},
-    })
+            "root": {"handlers": ["file", "console"], "level": "INFO"},
+        }
+    )
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):

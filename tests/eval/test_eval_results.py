@@ -11,9 +11,14 @@ def _clip(**overrides) -> ClipResult:
 
 def _result(clips=None, **overrides) -> BenchmarkResult:
     defaults = dict(
-        tier="quick", seed=42, tag="test-run", asr_model="whisper-x",
-        llm_model="qwen-x", refine_prompt_id="refine-v1",
-        summarize_prompt_id="summarize-v1", summary_language="pt",
+        tier="quick",
+        seed=42,
+        tag="test-run",
+        asr_model="whisper-x",
+        llm_model="qwen-x",
+        refine_prompt_id="refine-v1",
+        summarize_prompt_id="summarize-v1",
+        summary_language="pt",
     )
     defaults.update(overrides)
     return BenchmarkResult(clips=clips or [], **defaults)
@@ -54,9 +59,9 @@ class TestBenchmarkResultAggregates:
         assert result.n_errors == 2
 
     def test_schema_valid_rate(self):
-        result = _result([
-            _clip(schema_valid=True), _clip(schema_valid=True), _clip(schema_valid=False)
-        ])
+        result = _result(
+            [_clip(schema_valid=True), _clip(schema_valid=True), _clip(schema_valid=False)]
+        )
         assert result.schema_valid_rate() == pytest.approx(2 / 3)
 
     def test_schema_valid_rate_none_when_unmeasured(self):
@@ -64,9 +69,13 @@ class TestBenchmarkResultAggregates:
         assert result.schema_valid_rate() is None
 
     def test_slug_uniqueness(self):
-        result = _result([
-            _clip(docx_filename="a.docx"), _clip(docx_filename="a.docx"), _clip(docx_filename="b.docx"),
-        ])
+        result = _result(
+            [
+                _clip(docx_filename="a.docx"),
+                _clip(docx_filename="a.docx"),
+                _clip(docx_filename="b.docx"),
+            ]
+        )
         assert result.slug_uniqueness() == pytest.approx(2 / 3)
 
 
@@ -88,10 +97,12 @@ class TestBenchmarkResultRoundtrip:
 
 class TestMarkdownTable:
     def test_renders_without_raising_with_mixed_none_values(self):
-        result = _result([
-            _clip(),
-            _clip(clip_id="clip2", wer_raw=None, wer_refined=0.9, error="asr failed"),
-        ])
+        result = _result(
+            [
+                _clip(),
+                _clip(clip_id="clip2", wer_raw=None, wer_refined=0.9, error="asr failed"),
+            ]
+        )
         markdown = result.markdown_table()
         assert "clip1" in markdown
         assert "clip2" in markdown

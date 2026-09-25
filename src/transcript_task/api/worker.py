@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -47,7 +47,15 @@ class JobWorker:
         self._futures[job_id] = future
 
     def submit_benchmark(
-        self, tag: str, *, dataset: str, tier: str, n: int, seed: int, skip_refine: bool, semdist: bool = True
+        self,
+        tag: str,
+        *,
+        dataset: str,
+        tier: str,
+        n: int,
+        seed: int,
+        skip_refine: bool,
+        semdist: bool = True,
     ) -> None:
         # Shares the same executor (and its concurrency cap) as real jobs --
         # a benchmark run does the same ASR/LLM work a job does, just many
@@ -66,7 +74,14 @@ class JobWorker:
             future.result(timeout=timeout)
 
     def _run_benchmark(
-        self, tag: str, dataset: str, tier: str, n: int, seed: int, skip_refine: bool, semdist: bool = True
+        self,
+        tag: str,
+        dataset: str,
+        tier: str,
+        n: int,
+        seed: int,
+        skip_refine: bool,
+        semdist: bool = True,
     ) -> None:
         with Session(get_engine(self.settings)) as session:
             run = session.get(BenchmarkRun, tag)
@@ -74,15 +89,23 @@ class JobWorker:
                 return  # purged before it started
             try:
                 result = run_benchmark_tier(
-                    self.settings, dataset=dataset, tier=tier, tag=tag,
-                    n=n, seed=seed, skip_refine=skip_refine, use_mlflow=False,
-                    no_interpretation=True, no_semdist=not semdist,
-                    transcriber=self.transcriber, chat_model=self.chat_model,
+                    self.settings,
+                    dataset=dataset,
+                    tier=tier,
+                    tag=tag,
+                    n=n,
+                    seed=seed,
+                    skip_refine=skip_refine,
+                    use_mlflow=False,
+                    no_interpretation=True,
+                    no_semdist=not semdist,
+                    transcriber=self.transcriber,
+                    chat_model=self.chat_model,
                 )
             except DatasetNotFetched as exc:
                 run.status = BenchmarkStatus.failed
                 run.error = str(exc)
-                run.finished_at = datetime.now(timezone.utc)
+                run.finished_at = datetime.now(UTC)
                 session.add(run)
                 session.commit()
                 logger.warning("benchmark %s failed: %s", tag, exc)
@@ -90,19 +113,20 @@ class JobWorker:
             except Exception as exc:  # noqa: BLE001
                 run.status = BenchmarkStatus.failed
                 run.error = f"unexpected error: {exc}"
-                run.finished_at = datetime.now(timezone.utc)
+                run.finished_at = datetime.now(UTC)
                 session.add(run)
                 session.commit()
                 logger.exception("benchmark %s failed unexpectedly", tag)
                 return
 
             run.status = BenchmarkStatus.done
-            run.finished_at = datetime.now(timezone.utc)
+            run.finished_at = datetime.now(UTC)
             run.results_path = f"{DEFAULT_ARTIFACTS_DIR}/{tag}/results.json"
             session.add(run)
             session.commit()
-            logger.info("benchmark %s done: %d clips, %d errors",
-                        tag, result.n_clips, result.n_errors)
+            logger.info(
+                "benchmark %s done: %d clips, %d errors", tag, result.n_clips, result.n_errors
+            )
 
     def cancel(self, job_id: str) -> bool:
         """True if the job was still queued and successfully canceled.
@@ -147,21 +171,26 @@ class JobWorker:
 
             def on_stage(status: JobStatus) -> None:
                 job.status = status
-                job.updated_at = datetime.now(timezone.utc)
+                job.updated_at = datetime.now(UTC)
                 session.add(job)
                 session.commit()
 
             try:
                 per_job_settings = job_settings(self.settings, job_id)
                 result = run_job(
-                    job_id, audio_path, filename, per_job_settings,
-                    refine=refine, on_stage=on_stage,
-                    transcriber=self.transcriber, chat_model=self.chat_model,
+                    job_id,
+                    audio_path,
+                    filename,
+                    per_job_settings,
+                    refine=refine,
+                    on_stage=on_stage,
+                    transcriber=self.transcriber,
+                    chat_model=self.chat_model,
                 )
             except JobStageError as exc:
                 job.status = JobStatus.failed
                 job.error = str(exc)
-                job.updated_at = datetime.now(timezone.utc)
+                job.updated_at = datetime.now(UTC)
                 session.add(job)
                 session.commit()
                 logger.warning("job %s failed at %s: %s", job_id, exc.stage, exc.detail)
@@ -169,7 +198,7 @@ class JobWorker:
             except Exception as exc:  # noqa: BLE001 - a worker thread must never die silently
                 job.status = JobStatus.failed
                 job.error = f"unexpected error: {exc}"
-                job.updated_at = datetime.now(timezone.utc)
+                job.updated_at = datetime.now(UTC)
                 session.add(job)
                 session.commit()
                 logger.exception("job %s failed unexpectedly", job_id)
@@ -183,7 +212,7 @@ class JobWorker:
             job.refine_rejected = result.get("refine_rejected")
             job.summary = result.get("summary")
             job.docx_path = result.get("docx")
-            job.updated_at = datetime.now(timezone.utc)
+            job.updated_at = datetime.now(UTC)
             session.add(job)
 
             for stage, field in (
