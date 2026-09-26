@@ -1,0 +1,73 @@
+name: CI
+
+# Runs on every push and PR, on hosted runners only -- no self-hosted job
+# is ever reachable from a PR (see benchmark.yml), since a public repo's
+# self-hosted runner executing arbitrary PR code would be a real attack
+# surface.
+on:
+  push:
+  pull_request:
+
+jobs:
+  fast:
+    name: Lint, type-check, unit tests (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: mypy
+        run: uv run mypy src/
+
+      # Fakes for ASR/LLM (see tests/fakes.py) -- no Ollama or mlx-whisper
+      # touched here, only the unit tier per PLAN.md Phase 10/11.
+      - name: Unit tests
+        run: uv run pytest -m unit
+
+  macos-smoke:
+    name: Import checks + whisper-tiny smoke (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      # GitHub's macos-latest images ship ffmpeg already; this is a cheap
+      # no-op when so and a real install when the image changes underneath.
+      - name: Ensure ffmpeg is available
+        run: brew list ffmpeg &>/dev/null || brew install ffmpeg
+
+      # Caches the downloaded whisper-tiny weights (~40 MB from the HF Hub)
+      # so repeated runs don't re-fetch them every time.
+      - name: Cache Hugging Face model cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/huggingface
+          key: hf-whisper-tiny-${{ runner.os }}
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # Real mlx-whisper, real inference, a small/fast model rather than
+      # the production whisper-large-v3-turbo -- proves the ASR stack
+      # actually works on this exact (Apple Silicon) runner. Ollama isn't
+      # installed on hosted runners, so the LLM half of the pipeline isn't
+      # covered here -- that's benchmark.yml's self-hosted job.
+      - name: whisper-tiny smoke test
+        run: uv run python scripts/ci_macos_smoke.py

@@ -1,0 +1,95 @@
+name: Benchmark (self-hosted)
+
+# Deliberately never triggered by pull_request: this repo is public, and a
+# self-hosted runner executing PR-triggered code is a well-known attack
+# vector (anyone could open a PR that runs arbitrary code on this machine).
+# `push` only fires for commits already pushed by someone with write access;
+# `workflow_dispatch` is manual and requires the same. See PLAN.md Phase 11
+# for the self-hosted runner setup this job depends on -- until one is
+# registered with the `self-hosted` + `macOS` labels, this job just sits
+# queued and harmless; nothing else in CI depends on it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Benchmark tier"
+        type: choice
+        options: [quick, full]
+        default: quick
+      run_integration_tests:
+        description: "Also run the real-model integration test tier first"
+        type: boolean
+        default: false
+
+jobs:
+  benchmark:
+    name: Real-model benchmark
+    runs-on: [self-hosted, macOS]
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # Self-hosted runners reuse the same workspace across runs, but a
+      # brand-new one won't have data/fleurs_pt/ yet -- fetch it once rather
+      # than fail with DatasetNotFetched on the first real run. ~740 MB;
+      # fine on this machine's own bandwidth, not something to ask of a
+      # hosted runner (see ci.yml's comment on why the fast tiers stay
+      # hosted-only).
+      - name: Fetch FLEURS if not already present
+        run: |
+          test -f data/fleurs_pt/manifest.jsonl || uv run python scripts/fetch_dataset.py
+
+      - name: Real-model integration tests
+        if: ${{ github.event.inputs.run_integration_tests == 'true' }}
+        run: uv run pytest -m integration
+
+      # Non-blocking by design (PLAN.md decision): a regression here should
+      # surface, never fail the build. `run` and `compare` are two separate
+      # steps (rather than one shell one-liner) so a `run` failure (e.g. the
+      # dataset not fetched yet on this runner) and a `compare` regression
+      # produce distinguishable outcomes in the Actions UI.
+      - name: Run benchmark
+        id: run
+        continue-on-error: true
+        env:
+          TIER: ${{ github.event.inputs.tier || 'quick' }}
+        run: uv run python scripts/benchmark.py run --tier "$TIER" --tag "ci-$TIER-${{ github.run_id }}"
+
+      - name: Compare against the committed baseline
+        id: compare
+        if: steps.run.outcome == 'success'
+        continue-on-error: true
+        env:
+          TIER: ${{ github.event.inputs.tier || 'quick' }}
+        run: uv run python scripts/benchmark.py compare main-baseline "ci-$TIER-${{ github.run_id }}"
+
+      - name: Warn on regression or a failed run
+        if: steps.run.outcome == 'failure' || steps.compare.outcome == 'failure'
+        run: |
+          echo "::warning::Benchmark step failed, or a regression was detected past the 0.02 threshold. See the 'Run benchmark'/'Compare against the committed baseline' step logs. This does not fail the build (PLAN.md decision: benchmark is non-blocking)."
+
+      # No --label: a label has to pre-exist in the repo or `gh issue create`
+      # rejects the whole call, which would be a strange way for a
+      # non-blocking notification step to fail. Add one manually in the
+      # repo's Issues settings and a --label flag here if you want these
+      # auto-triaged later.
+      - name: Open an issue on regression or a failed run
+        if: steps.run.outcome == 'failure' || steps.compare.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "Benchmark regression or failure -- run ${{ github.run_id }}" \
+            --body "The self-hosted benchmark workflow either failed to run or detected a regression past the 0.02 absolute threshold against \`main-baseline\`. Non-blocking by design -- see the run for details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

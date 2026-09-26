@@ -400,6 +400,45 @@ uv run ruff format .   # format (replaces black/isort)
 uv run mypy src/       # type check
 ```
 
+## CI/CD
+
+CI cannot run the production models: GitHub's hosted macOS runners are Apple
+Silicon (so `mlx-whisper` works), but pulling the 6.6 GB `qwen3.5:9b` Ollama
+model on every run isn't viable, and Ollama itself isn't installed on hosted
+runners at all. So CI is tiered:
+
+| Workflow | Runner | On every push/PR? | What runs |
+|---|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | `ubuntu-latest` | Yes | ruff, mypy, unit tests (models faked) |
+| [`ci.yml`](.github/workflows/ci.yml) | `macos-latest` | Yes | import checks + a real `whisper-tiny` transcription of a committed fixture clip -- proves the ASR stack actually works on real Apple Silicon, without the cost of the production model |
+| [`benchmark.yml`](.github/workflows/benchmark.yml) | self-hosted (your own Mac, with Ollama + the real models already set up) | Push to `main` only | `quick`-tier benchmark, compared against a committed baseline (`benchmarks/main-baseline/`); **non-blocking** -- a regression posts a `::warning::` annotation and opens an issue rather than failing the build |
+| [`benchmark.yml`](.github/workflows/benchmark.yml) | self-hosted | Manual (`workflow_dispatch`) | choice of `quick`/`full` tier, optionally preceded by the real-model integration test tier |
+
+`benchmark.yml` never triggers on `pull_request` -- a public repo's
+self-hosted runner executing arbitrary PR-authored code is a real attack
+surface, so it only runs from `push` (to `main`) or a manual dispatch, both
+of which already require write access to the repo. Until a self-hosted
+runner is registered with the `self-hosted` + `macOS` labels, that workflow
+just sits queued and harmless.
+
+**Registering the self-hosted runner** (one-time, on the machine that already
+has Ollama + the models): repo → Settings → Actions → Runners → New
+self-hosted runner, follow GitHub's generated `config.sh`/`run.sh` commands
+(or install it as a background service so it survives reboots), and make
+sure its labels include `macOS`.
+
+**Pre-commit hooks** ([`.pre-commit-config.yaml`](.pre-commit-config.yaml)):
+ruff, ruff-format, trailing-whitespace/end-of-file fixups, a large-file guard
+(keeps `data/`/audio out if `.gitignore` is ever bypassed), and
+[gitleaks](https://github.com/gitleaks/gitleaks) for secret scanning -- cheap
+insurance given this repo's own `.env`/PAT history (see Phase 0 in
+[PLAN.md](PLAN.md)). Install once with:
+
+```bash
+uv run pre-commit install          # wires it into .git/hooks/pre-commit
+uv run pre-commit run --all-files  # run it on demand against everything
+```
+
 ## Benchmark dataset
 
 For evaluation and for real-audio test fixtures, this project uses

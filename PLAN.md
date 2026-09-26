@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–10 complete (2026-09-25, on `dev`). Phases 11-12 pending. All open
+**Status:** Phases 0–11 complete (2026-09-26, on `dev`). Phase 12 pending. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -27,7 +27,8 @@ README and this plan were swept for scenario-specific framing and examples.
 | Refine prompt | `refine-pt-v2` (default), tuned and measured against both benchmarks: cut refine's own WER regressions 7/30→2/30 (Common Voice) and 13/30→6/30 (FLEURS) vs. `refine-pt-v1`, still available by id |
 | API | FastAPI (`transcript_task.api.app`) — jobs (async, per-job `refine` toggle, always both transcripts when refine runs), config (live-patchable, validated, versioned per job), models, benchmark endpoints; SQLite (`runs.db`) persistence; `structlog` JSON+console logging; RFC 7807 errors, full OpenAPI docs at `/docs` |
 | Frontend | `frontend/app.py` — single-screen Streamlit demo (upload → poll → result → reset), polls the API only, never imports the pipeline |
-| Missing | CI |
+| CI/CD | `.github/workflows/ci.yml` (ubuntu: ruff/mypy/unit; macos: import checks + real `whisper-tiny` smoke) on every push/PR; `.github/workflows/benchmark.yml` (self-hosted, non-blocking `quick`/`full` benchmark) on push to `main` + manual dispatch, never PR-triggered; `.pre-commit-config.yaml` (ruff, ruff-format, large-file guard, gitleaks) |
+| Missing | a registered self-hosted runner (physical step on the Mac mini; `benchmark.yml` queues harmlessly until then) |
 | Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
 
 As of Phase 2, the code is a proper `src/` package (`src/transcript_task/`) with a
@@ -1410,6 +1411,79 @@ create the repo, push, and watch the first Actions run; otherwise you create the
 I'll wire the workflows and verify by inspection. **Note that a `workflow`-scoped PAT is
 a powerful credential** — I'd rather you `gh auth login` interactively, and it costs you
 about thirty seconds.
+
+**Done, 2026-09-26, on `dev`.** Built as planned, with a few things worth recording:
+
+- **The PAT was never touched.** The repo already existed as `origin` (confirmed:
+  `git push` already worked, no `gh` needed). The one thing left that could have used
+  it -- watching the first Actions run -- doesn't need write access at all, since this
+  repo is public: `curl https://api.github.com/repos/.../actions/runs` reads workflow
+  run status unauthenticated. So neither `gh auth login` nor the `.env` PAT was ever
+  needed here; even more conservative than the plan's own preference.
+- **The "Linux can't run MLX at all" premise has partly aged out.** `mlx` now ships
+  `manylinux` wheels for both `x86_64` and `aarch64` (checked directly against PyPI),
+  and `mlx-whisper` itself is a pure-Python wheel -- so `uv sync` installs cleanly on
+  `ubuntu-latest` today, which wasn't true when this plan was written. Doesn't change
+  the design: the ubuntu tier only ever runs the unit tier against faked ASR/LLM
+  (`asr.py`'s `import mlx_whisper` is lazy, inside the method, never touched by those
+  tests), so whether mlx's Linux backend can do real inference on CPU-only hardware
+  was never actually relevant here.
+- **`scripts/ci_macos_smoke.py`** (new) does the macOS tier's import checks + a real
+  `whisper-tiny` transcription of the shortest committed fixture (`fleurs_row00871.wav`,
+  4.44s) -- run and verified locally before ever being pushed (got a real, if
+  low-quality as expected for a tiny model on Portuguese, transcript back). HF model
+  weights cached via `actions/cache` so repeated runs don't re-fetch them.
+- **`benchmark.yml` never triggers on `pull_request`**, only `push` (to `main`) and
+  manual `workflow_dispatch` -- both already require write access. A public repo's
+  self-hosted runner executing arbitrary PR-authored code is a real, well-known attack
+  vector; this design closes it off entirely rather than relying on approval gating.
+  Non-blocking is implemented via `continue-on-error` on the run/compare steps, a
+  `::warning::` annotation, and `gh issue create` using the auto-provisioned
+  `GITHUB_TOKEN` (declared `permissions: issues: write` at the job level) -- no PAT
+  needed there either.
+- **Committed baseline (`benchmarks/main-baseline/`):** reused the existing
+  `fleurs-v2-candidate` run rather than re-running a duplicate -- its config
+  (`whisper-large-v3-turbo`, `qwen3.5:9b`, `refine-pt-v2`/`summarize-pt-v2`, quick
+  tier, n=30 seed=42) already matches the current defaults exactly. Retagged, then
+  verified by comparing it against itself (`compare main-baseline main-baseline`):
+  all 6 metrics at exactly +0.0000 delta, no regression, before trusting it as CI's
+  fixed comparison point. `.gitignore`'s blanket `benchmarks/` exclusion needed
+  restructuring to `benchmarks/*` + `!benchmarks/main-baseline/` -- git can't
+  re-include a path under an already-ignored directory, only under one whose
+  *contents* (not the directory itself) are ignored.
+- **The self-hosted runner isn't registered yet** -- that's a physical step only
+  doable on the Mac mini itself (repo Settings → Actions → Runners → New
+  self-hosted runner). `benchmark.yml` is pushed and ready; until a runner with the
+  `self-hosted`+`macOS` labels exists, that workflow just queues harmlessly. Setup
+  steps are in the README's new CI/CD section.
+- **Pre-commit:** chose `gitleaks` over `detect-secrets` (no baseline-file to
+  generate and maintain for a repo this size). Installed and verified for real, not
+  just written: `uv run pre-commit run --all-files` caught and auto-fixed two
+  genuine nits (a missing trailing newline in the new baseline JSON, an import
+  ordering blank line in the new smoke-test script) before either was ever pushed as
+  "clean." A full `gitleaks detect` history scan (19 commits, ~1.6 MB) independently
+  found nothing, consistent with Phase 0's secret-hygiene work holding up.
+- **Environmental aside, not code, but worth recording in full given this project's
+  transparency norm:** before writing the ubuntu workflow, I tried to verify `uv
+  sync` on real Linux via a local Docker container (through the machine's existing
+  `colima` setup) rather than assume from wheel-availability alone. The container's
+  package downloads (torch, transformers, mlflow, etc., pulled in by `mlx-whisper`'s
+  own dependency tree) grew colima's VM disk to 11 GB and filled the host disk to
+  **zero bytes free**, which froze every tool this session had -- even `echo` failed
+  because the harness couldn't write its own tiny output-capture file. There was no
+  way to fix this from inside the session; work was fully blocked until you freed
+  space manually. Once unblocked, `colima delete -f` reclaimed the 11 GB (my own
+  mess, fully reversible -- `colima start` recreates it), and per your explicit
+  go-ahead, 8 Ollama models unrelated to this project (~28 GB, none referenced
+  anywhere in this plan) were also removed, leaving `qwen3.5:9b` (the project's
+  model) and `llama3.2:1b` (referenced in Phase 6's write-up) in place. Lesson taken:
+  check actual free-space headroom before a heavy local verification attempt,
+  especially right after a disk-space incident earlier in the same session.
+- Verified: `pytest -m "unit or e2e"` (290 passed), `ruff check`/`mypy src/` both
+  clean, `pre-commit run --all-files` clean, and the macOS smoke script run for real
+  locally -- all before pushing. The actual GitHub Actions run (both hosted jobs,
+  triggered automatically by this push) is the final verification step, watched via
+  the public unauthenticated API rather than `gh`.
 
 ---
 

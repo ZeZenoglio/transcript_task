@@ -1,0 +1,34 @@
+# Pre-commit hooks (PLAN.md Phase 11). Install once with:
+#   uv run pre-commit install
+# Run manually against everything with:
+#   uv run pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        # Keeps data/ and audio out of history if .gitignore is ever
+        # bypassed with `git add -f` -- 1 MB comfortably covers the
+        # committed fixture clips (~660 KB total) without allowing a
+        # stray full recording or dataset file through.
+        args: ["--maxkb=1024"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  # Cheap insurance given this repo's own .env/PAT situation (PLAN.md
+  # Phase 0). Requires the `gitleaks` binary on PATH (`brew install
+  # gitleaks` or see https://github.com/gitleaks/gitleaks#installing) --
+  # the `language: system` hook, not `-docker`, so commits stay fast and
+  # don't need Docker running.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

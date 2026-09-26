@@ -62,7 +62,16 @@ logs/
 # ---------------------------------------------------------------------------
 mlruns/
 mlartifacts/
-benchmarks/
+# Exception: the CI regression baseline (Phase 11) -- a small, committed
+# JSON+markdown snapshot of one real quick-tier run against the current
+# default config, so benchmark.yml's compare step has something fixed to
+# diff every push against, without needing a tracking server reachable
+# from CI. Everything else under benchmarks/ stays local-only. Git can't
+# re-include a path under an already-ignored directory, so this ignores
+# benchmarks/'s *contents* (`benchmarks/*`) rather than the directory
+# itself, which is what makes the negation below actually work.
+benchmarks/*
+!benchmarks/main-baseline/
 *.db
 *.sqlite
 *.sqlite3
