@@ -20,6 +20,15 @@ jobs:
           python-version: "3.13"
           enable-cache: true
 
+      # ubuntu-latest does NOT ship ffmpeg/ffprobe by default (confirmed
+      # against actions/runner-images' own software manifest -- it's easy
+      # to assume otherwise and find out only from a red unit-test run,
+      # which is exactly what happened writing this workflow). The unit
+      # tier includes tests/unit/test_audio.py, which shells out to real
+      # ffmpeg/ffprobe against real committed fixture clips.
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
       - name: Install dependencies
         run: uv sync --locked
 
