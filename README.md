@@ -19,24 +19,67 @@ input (one file, or a zip of many)
 > Nothing sent to a model here leaves the machine, which is the point of running
 > it locally at all: whatever you feed it stays private by construction.
 
-## Quick start
+## Architecture
 
-```bash
-brew install ffmpeg          # if not already present
-uv sync
-ollama serve                 # if not already running
-uv run python main.py --input recordings.zip     # a zip of several files
-uv run python main.py --input interview.m4a       # or just one file
+Three ways in (a CLI, an HTTP API, and a Streamlit demo that only talks to the
+API), all driving the same six pipeline stage functions — no logic is
+duplicated between them:
+
+```
+ ┌────────────────┐              ┌─────────────────────────┐
+ │ CLI (main.py)   │              │ Streamlit frontend       │
+ │ batch/zip in    │              │ (frontend/app.py)        │
+ └────────┬────────┘              └────────────┬─────────────┘
+          │                                    │ HTTP only, never
+          │                                    │ imports the pipeline
+          │                                    ▼
+          │                     ┌───────────────────────────┐
+          │                     │ FastAPI service (api/)     │
+          │                     │ jobs · config · models ·   │
+          │                     │ benchmark, SQLite (runs.db)│
+          │                     └────────────┬───────────────┘
+          │                                  │
+          └────────────────┬─────────────────┘
+                            ▼
+      shared pipeline stage functions (src/transcript_task/*.py)
+   extract → normalize → transcribe → refine → summarize → docx
+              (ffmpeg)   (mlx-whisper)  (Ollama)   (Ollama)
+
+   Also built on these same stage functions/models:
+   scripts/benchmark.py -> eval/ -> MLflow (mlruns/) + benchmarks/*.json
 ```
 
-Results land in:
+The CLI writes its results to `output/transcripts.json` + `output/docx/`; the
+API writes to per-job directories under `data/api_jobs/` and records each job
+as a row in `runs.db`. Both paths call the exact same `stage_*` functions in
+`pipeline.py` — an API job *is* a CLI run on one file, just with its own
+isolated settings/output directories so concurrent jobs never collide.
 
-| Path | Contents |
-|---|---|
-| `output/transcripts.json` | every transcript — raw, refined, and its structured summary — with timings and segment timestamps |
-| `output/docx/` | one Word document per audio file, named after its generated title |
-| `tmp/extracted/` | audio unpacked from the input |
-| `tmp/normalized/` | 16 kHz mono WAVs fed to the ASR model |
+## Quickstart
+
+Three ways to run this, in increasing order of how much you're driving it
+directly. Each links to its own section below for the full detail.
+
+**CLI** — process a file or a zip of files, straight to `.docx`:
+
+```bash
+brew install ffmpeg && uv sync && ollama serve   # one-time setup
+uv run python main.py --input recordings.zip     # or a single file, e.g. interview.m4a
+```
+
+**API** — same pipeline, over HTTP, with job tracking (see [API](#api)):
+
+```bash
+uv run uvicorn transcript_task.api.app:app --reload
+curl http://127.0.0.1:8000/docs   # interactive Swagger UI
+```
+
+**UI** — a Streamlit demo on top of the API (see [Frontend](#frontend)):
+
+```bash
+uv run uvicorn transcript_task.api.app:app &   # API must already be running
+uv run streamlit run frontend/app.py
+```
 
 ## Model choices
 
@@ -195,7 +238,7 @@ deliberately the same id a future API (see [PLAN.md](PLAN.md), Phase 7) would us
 as a job id and a database primary key — one id names a file, a JSON record, and
 eventually a database row for the same recording.
 
-## Usage
+## CLI reference
 
 ```bash
 uv run python main.py --input recordings.zip                          # run everything (resumes from cache)
@@ -214,7 +257,14 @@ resumes where it stopped. To try a different SLM, change `llm_model` in
 run `--only refine summarize docx --force`.
 
 `main.py` is a thin entry point; `uv run python -m transcript_task.pipeline --input ...`
-does exactly the same thing.
+does exactly the same thing. Results land in:
+
+| Path | Contents |
+|---|---|
+| `output/transcripts.json` | every transcript — raw, refined, and its structured summary — with timings and segment timestamps |
+| `output/docx/` | one Word document per audio file, named after its generated title |
+| `tmp/extracted/` | audio unpacked from the input |
+| `tmp/normalized/` | 16 kHz mono WAVs fed to the ASR model |
 
 ## API
 
@@ -411,7 +461,7 @@ runners at all. So CI is tiered:
 |---|---|---|---|
 | [`ci.yml`](.github/workflows/ci.yml) | `ubuntu-latest` | Yes | ruff, mypy, unit tests (models faked) |
 | [`ci.yml`](.github/workflows/ci.yml) | `macos-latest` | Yes | import checks + a real `whisper-tiny` transcription of a committed fixture clip -- proves the ASR stack actually works on real Apple Silicon, without the cost of the production model |
-| [`benchmark.yml`](.github/workflows/benchmark.yml) | self-hosted (your own Mac, with Ollama + the real models already set up) | Push to `main` only | `quick`-tier benchmark, compared against a committed baseline (`benchmarks/main-baseline/`); **non-blocking** -- a regression posts a `::warning::` annotation and opens an issue rather than failing the build |
+| [`benchmark.yml`](.github/workflows/benchmark.yml) | self-hosted (your own Mac, with Ollama + the real models already set up) | Push to `master` only | `quick`-tier benchmark, compared against a committed baseline (`benchmarks/main-baseline/`); **non-blocking** -- a regression posts a `::warning::` annotation and opens an issue rather than failing the build |
 | [`benchmark.yml`](.github/workflows/benchmark.yml) | self-hosted | Manual (`workflow_dispatch`) | choice of `quick`/`full` tier, optionally preceded by the real-model integration test tier |
 
 `benchmark.yml` never triggers on `pull_request` -- a public repo's

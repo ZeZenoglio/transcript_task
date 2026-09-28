@@ -10,7 +10,7 @@ name: Benchmark (self-hosted)
 # queued and harmless; nothing else in CI depends on it.
 on:
   push:
-    branches: [main]
+    branches: [master] # this repo's actual default branch -- see decision #2 in PLAN.md
   workflow_dispatch:
     inputs:
       tier:

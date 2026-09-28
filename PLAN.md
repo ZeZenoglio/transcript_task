@@ -2,7 +2,7 @@
 
 From a working local script to an evaluated, served, tested product.
 
-**Status:** Phases 0–11 complete (2026-09-26, on `dev`). Phase 12 pending. All open
+**Status:** All 12 phases complete (2026-09-28). `dev` merged to `master`. All open
 decisions answered — see *Decisions made* at the end.
 
 **Scope correction (2026-09-24):** the tool generalises to a plain speech-to-text
@@ -27,9 +27,9 @@ README and this plan were swept for scenario-specific framing and examples.
 | Refine prompt | `refine-pt-v2` (default), tuned and measured against both benchmarks: cut refine's own WER regressions 7/30→2/30 (Common Voice) and 13/30→6/30 (FLEURS) vs. `refine-pt-v1`, still available by id |
 | API | FastAPI (`transcript_task.api.app`) — jobs (async, per-job `refine` toggle, always both transcripts when refine runs), config (live-patchable, validated, versioned per job), models, benchmark endpoints; SQLite (`runs.db`) persistence; `structlog` JSON+console logging; RFC 7807 errors, full OpenAPI docs at `/docs` |
 | Frontend | `frontend/app.py` — single-screen Streamlit demo (upload → poll → result → reset), polls the API only, never imports the pipeline |
-| CI/CD | `.github/workflows/ci.yml` (ubuntu: ruff/mypy/unit; macos: import checks + real `whisper-tiny` smoke) on every push/PR; `.github/workflows/benchmark.yml` (self-hosted, non-blocking `quick`/`full` benchmark) on push to `main` + manual dispatch, never PR-triggered; `.pre-commit-config.yaml` (ruff, ruff-format, large-file guard, gitleaks) |
+| CI/CD | `.github/workflows/ci.yml` (ubuntu: ruff/mypy/unit; macos: import checks + real `whisper-tiny` smoke) on every push/PR; `.github/workflows/benchmark.yml` (self-hosted, non-blocking `quick`/`full` benchmark) on push to `master` (this repo's actual default branch) + manual dispatch, never PR-triggered; `.pre-commit-config.yaml` (ruff, ruff-format, large-file guard, gitleaks) |
 | Missing | a registered self-hosted runner (physical step on the Mac mini; `benchmark.yml` queues harmlessly until then) |
-| Repo | pushed, public, `origin/master` + `origin/dev`, `gh` not authenticated locally |
+| Repo | pushed, public, `dev` merged (fast-forward) into `master` (this repo's actual default branch), `gh` not authenticated locally |
 
 As of Phase 2, the code is a proper `src/` package (`src/transcript_task/`) with a
 pydantic `Settings` model passed explicitly into each stage, and the ASR/LLM calls
@@ -1433,9 +1433,10 @@ about thirty seconds.
   4.44s) -- run and verified locally before ever being pushed (got a real, if
   low-quality as expected for a tiny model on Portuguese, transcript back). HF model
   weights cached via `actions/cache` so repeated runs don't re-fetch them.
-- **`benchmark.yml` never triggers on `pull_request`**, only `push` (to `main`) and
-  manual `workflow_dispatch` -- both already require write access. A public repo's
-  self-hosted runner executing arbitrary PR-authored code is a real, well-known attack
+- **`benchmark.yml` never triggers on `pull_request`**, only `push` (to `master`;
+  written as `main` at the time and corrected in Phase 12's audit -- see below)
+  and manual `workflow_dispatch` -- both already require write access. A public
+  repo's self-hosted runner executing arbitrary PR-authored code is a real, well-known attack
   vector; this design closes it off entirely rather than relying on approval gating.
   Non-blocking is implemented via `continue-on-error` on the run/compare steps, a
   `::warning::` annotation, and `gh issue create` using the auto-provisioned
@@ -1517,6 +1518,87 @@ about thirty seconds.
 - **Final audit pass**: walk this document top to bottom and verify each phase's exit
   criteria against the built system, reporting anything unmet rather than quietly
   dropping it.
+
+**Done, 2026-09-28, on `dev`, merged to `master`.** Most of the README's required
+content already existed and was accurate -- it had been updated incrementally at
+the end of nearly every phase, not left to accrete drift for this phase to untangle.
+What this phase actually did:
+
+- **Added, genuinely missing before now:** an `## Architecture` section with a
+  diagram showing all three entry points (CLI, API, Streamlit UI) converging on
+  the same shared `stage_*` functions, plus where each one's output lands
+  (`output/` vs `runs.db`) -- the existing top-of-file diagram only showed the
+  six pipeline *stages*, not how the three ways of driving them relate. Added a
+  consolidated `## Quickstart` right after it with all three modes' minimal
+  commands side by side, linking down to their full sections -- previously the
+  API/UI quickstarts only existed buried inside their own detailed sections,
+  with nothing that let a newcomer see all three options at a glance.
+- **Reorganized, not added:** the old un-named "Quick start" (CLI-only, output
+  paths table) and the full "Usage" section (CLI flags) were two separate
+  sections split apart by five others -- merged into one `## CLI reference`
+  right after Quickstart, since the new Quickstart section already covers the
+  "what do I type first" job the old one did.
+- **Everything else on the bullet list was already there and checked for
+  accuracy, not rewritten:** model rationale (`## Model choices`, unchanged --
+  still the real benchmarked comparison from the original README), the FLEURS
+  caveat (stated in `## Benchmark dataset` *and* repeated at the point in
+  `## Evaluation harness` where it's actually load-bearing, i.e. right where the
+  refine-raises-WER finding is reported), the API reference pointer (`/docs`,
+  in `## API`), the eval guide (`## Evaluation harness`'s `run`/`compare`
+  commands, framed explicitly as "how to tell if your change helped"), and the
+  privacy note (both the top-of-file blockquote and the full
+  `## Privacy: filenames and metadata never carry a name` section). Verified
+  every internal markdown link in the file resolves to a real path (a small
+  script check, not eyeballed) before considering this done.
+- **Commit history:** squash-free already -- 21 commits on `dev` since
+  `master`'s single "first commit," one per phase or discrete fix, each with a
+  detailed message (the standing instruction this whole project has followed).
+  Nothing to rewrite; `master` is a plain fast-forward of `dev` (confirmed via
+  `git merge-base --is-ancestor master dev`), so the merge preserves the exact
+  history rather than squashing or rebasing it.
+- **Branch naming:** the plan's own text says "push to `main`," but decision #2
+  was "stay on `master` unless the first push produces `main`" -- it produced
+  `master` (confirmed: `git remote show origin` reports `master` as the
+  repo's actual default branch), so this phase pushes there. Recorded here so
+  the mismatch between this document's wording and the real branch name isn't
+  mistaken for an oversight.
+
+**Final audit pass, phase by phase, against the actual current system rather
+than re-reading each phase's own prose as proof of itself:**
+
+- Re-ran the full test suite across all four tiers (`unit`, `eval`, `e2e`,
+  `integration`) for real, including the 3 live-model tests against real
+  Ollama/mlx-whisper: 293 passed, 1 skipped, 0 failed. `ruff check`, `ruff
+  format --check`, and `mypy src/` all clean. `pre-commit run --all-files`
+  clean. A full `gitleaks detect` history scan (22 commits) found nothing --
+  re-verifying Phase 0's exit criterion still holds today, not just when it
+  was written.
+- Re-verified Phase 0's `.gitignore` claims directly with `git check-ignore`
+  against `.env`, `data/`, `mlruns/`, `output/`, `tmp/` -- all still correctly
+  ignored.
+- Re-verified Phase 2's CLI interface claim (`uv run python -m
+  transcript_task.pipeline --help` still shows the documented 5-flag,
+  6-stage interface) and Phase 7's third bug fix (`api/` missing
+  `__init__.py`, causing a real wheel to silently drop the package) by
+  actually building the wheel again (`uv build --wheel`) and listing its
+  contents: all 7 `api/` files and all 11 `eval/` files are present --
+  confirming Phase 10/11's substantial reorganization of everything around
+  these packages never silently regressed the packaging fix.
+- Spot-checked every phase's stated file deliverables exist:
+  `docs/research-stt-landscape.md` (Phase 1), `.env.example` (Phase 0),
+  `tests/fixtures/NOTICE.md` and `tests/fixtures_noisy/NOTICE.md` (Phase 4/6
+  attribution).
+- **Nothing unmet was found.** Every phase's exit criterion, checked against
+  the system as it exists today rather than trusted from its own write-up,
+  still holds.
+- **One thing intentionally left alone, not silently dropped:** the
+  phase-by-phase sections above still reference test file paths from before
+  Phase 10's tier reorg (e.g. `tests/test_anonymize.py`, now
+  `tests/unit/test_anonymize.py`). These are dated historical log entries --
+  accurate descriptions of what was true *when written* -- not living
+  documentation, so they're left as the historical record rather than
+  rewritten to match today's layout. The README and the "Current state"
+  table above already use current paths throughout.
 
 ---
 
